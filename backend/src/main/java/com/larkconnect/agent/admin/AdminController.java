@@ -1,0 +1,70 @@
+package com.larkconnect.agent.admin;
+
+import com.larkconnect.agent.common.ApiResponse;
+import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/admin")
+public class AdminController {
+    private final AdminService adminService;
+
+    public AdminController(AdminService adminService) {
+        this.adminService = adminService;
+    }
+
+    @PostMapping("/login")
+    public ApiResponse<AdminDtos.LoginResponse> login(@Valid @RequestBody AdminDtos.LoginRequest request) {
+        return ApiResponse.ok(adminService.login(request));
+    }
+
+    @GetMapping("/user-bindings")
+    public ApiResponse<List<Map<String, Object>>> listUserBindings() {
+        return ApiResponse.ok(adminService.listUserBindings());
+    }
+
+    @PostMapping("/user-bindings")
+    public ApiResponse<Void> saveUserBinding(@Valid @RequestBody AdminDtos.UserBindingRequest request) {
+        adminService.saveUserBinding(request);
+        return ApiResponse.ok(null);
+    }
+
+    @GetMapping("/project-tokens")
+    public ApiResponse<List<Map<String, Object>>> listProjectTokens() {
+        return ApiResponse.ok(adminService.listProjectTokens());
+    }
+
+    @PostMapping("/project-tokens")
+    public ApiResponse<Void> saveProjectToken(@Valid @RequestBody AdminDtos.ProjectTokenRequest request) {
+        adminService.saveProjectToken(request);
+        return ApiResponse.ok(null);
+    }
+
+    @GetMapping("/chat-project-bindings")
+    public ApiResponse<List<Map<String, Object>>> listChatBindings() {
+        return ApiResponse.ok(adminService.listChatBindings());
+    }
+
+    @PostMapping("/chat-project-bindings")
+    public ApiResponse<Void> saveChatBinding(@Valid @RequestBody AdminDtos.ChatProjectBindingRequest request) {
+        adminService.saveChatBinding(request);
+        return ApiResponse.ok(null);
+    }
+
+    @GetMapping("/audit-logs")
+    public ApiResponse<List<Map<String, Object>>> listAuditLogs() {
+        return ApiResponse.ok(adminService.listAuditLogs());
+    }
+
+    @GetMapping("/agent-tasks")
+    public ApiResponse<List<Map<String, Object>>> listAgentTasks() {
+        return ApiResponse.ok(adminService.listAgentTasks());
+    }
+}

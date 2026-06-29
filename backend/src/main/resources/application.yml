@@ -1,0 +1,39 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: lark-connect-agent-gateway
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/lark_connect_agent?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:}
+  flyway:
+    enabled: true
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+
+app:
+  admin:
+    token-ttl-seconds: 28800
+    bootstrap-username: ${ADMIN_BOOTSTRAP_USERNAME:admin}
+    bootstrap-password: ${ADMIN_BOOTSTRAP_PASSWORD:admin123}
+  agent:
+    max-projects-per-query: 20
+    model-timeout-ms: 30000
+    mcp-timeout-ms: 30000
+  feishu:
+    app-id: ${FEISHU_APP_ID:}
+    app-secret: ${FEISHU_APP_SECRET:}
+    verification-token: ${FEISHU_VERIFICATION_TOKEN:}
+    encrypt-key: ${FEISHU_ENCRYPT_KEY:}
+  deepseek:
+    base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+    api-key: ${DEEPSEEK_API_KEY:}
+    model: ${DEEPSEEK_MODEL:deepseek-chat}
+  mcp:
+    endpoint: ${PRIMELAYER_MCP_ENDPOINT:http://localhost:9000/mcp}
+    auth-header-name: ${PRIMELAYER_MCP_AUTH_HEADER:X-API-Key}
