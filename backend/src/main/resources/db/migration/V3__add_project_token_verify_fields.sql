@@ -1,0 +1,4 @@
+ALTER TABLE project_mcp_token
+  ADD COLUMN verify_status VARCHAR(32) NOT NULL DEFAULT 'VERIFIED',
+  ADD COLUMN last_verified_at TIMESTAMP NULL,
+  ADD COLUMN verify_error VARCHAR(512) NULL;

@@ -2,8 +2,16 @@ server:
   port: 8080
 
 spring:
+  config:
+    import:
+      - optional:classpath:.env[.properties]
+      - optional:file:.env[.properties]
+      - optional:file:../.env[.properties]
   application:
     name: lark-connect-agent-gateway
+  jackson:
+    time-zone: Asia/Shanghai
+    date-format: yyyy-MM-dd HH:mm:ss
   datasource:
     url: ${MYSQL_URL:jdbc:mysql://localhost:3306/lark_connect_agent?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai}
     username: ${MYSQL_USERNAME:root}
@@ -25,11 +33,15 @@ app:
     max-projects-per-query: 20
     model-timeout-ms: 30000
     mcp-timeout-ms: 30000
+  agent-service:
+    enabled: ${AGENT_SERVICE_ENABLED:true}
+    base-url: ${AGENT_SERVICE_BASE_URL:http://localhost:8090}
   feishu:
     app-id: ${FEISHU_APP_ID:}
     app-secret: ${FEISHU_APP_SECRET:}
     verification-token: ${FEISHU_VERIFICATION_TOKEN:}
     encrypt-key: ${FEISHU_ENCRYPT_KEY:}
+    echo-enabled: ${FEISHU_ECHO_ENABLED:true}
   deepseek:
     base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
     api-key: ${DEEPSEEK_API_KEY:}
