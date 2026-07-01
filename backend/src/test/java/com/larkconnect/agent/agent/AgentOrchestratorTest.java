@@ -7,6 +7,7 @@ import com.larkconnect.agent.ai.AnswerEngineRouter;
 import com.larkconnect.agent.ai.FastGptAnswerEngine;
 import com.larkconnect.agent.ai.FastGptClient;
 import com.larkconnect.agent.audit.AuditService;
+import com.larkconnect.agent.audit.ChainTrace;
 import com.larkconnect.agent.audit.ChainTraceService;
 import com.larkconnect.agent.common.Status;
 import com.larkconnect.agent.config.AppProperties;
@@ -200,7 +201,12 @@ class AgentOrchestratorTest {
                 agentServiceClient,
                 new IntentRouter(),
                 answerEngineRouter,
-                new ChainTraceService(null, new ObjectMapper())
+                new ChainTraceService(null, new ObjectMapper()) {
+                    @Override
+                    public void save(String requestId, ChainTrace trace) {
+                        // no-op in tests
+                    }
+                }
         );
     }
 

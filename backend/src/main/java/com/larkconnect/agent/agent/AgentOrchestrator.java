@@ -205,15 +205,33 @@ public class AgentOrchestrator {
         AgentServiceDtos.AgentAnswerResponse plan = null;
         String answer = null;
 
+        ChainTrace trace = new ChainTrace(requestId);
+        trace.addAnalyzeNode("start", "AgentService 启动", "avaliableTools: " + availableTools.size(), "context: " + context.tokens().size() + " projects", 0L);
+        String prevNodeId = "start";
+        int totalMcpCalls = 0;
+        List<String> toolNames = new ArrayList<>();
+
         for (int round = 1; round <= MAX_AGENT_SERVICE_ROUNDS; round++) {
             AgentServiceDtos.AgentAnswerRequest planRequest = agentRequest(requestId, question, chatType, openId, context, availableTools, toolResults);
+            long roundStarted = System.currentTimeMillis();
             plan = agentServiceClient.answer(planRequest);
+            long roundLatency = System.currentTimeMillis() - roundStarted;
             auditService.writeModel(requestId, "agent-service", round == 1 ? "plan" : "round_" + round, question, toJson(plan), Status.SUCCEEDED, 0, null);
+
+            String planNodeId = "agent_plan_r" + round;
+            trace.addAnalyzeNode(planNodeId, "AgentService 规划 round " + round,
+                    "question: " + question, toJson(plan), roundLatency);
+            trace.addEdge(new ChainTrace.Edge(prevNodeId, planNodeId));
+            prevNodeId = planNodeId;
 
             if (plan.requiresClarification()) {
                 String clarification = hasText(plan.clarificationQuestion()) ? plan.clarificationQuestion() : "请补充项目名称或查询范围。";
                 feishuClient.replyAnswerCard(messageId, question, clarification, "需要补充信息", "orange");
                 auditService.writeMain(requestId, openId, chatId, context.primelayerUserId(), List.of(), question, plan.skillId(), clarification, System.currentTimeMillis() - started, null);
+                trace.summary.totalMcpCalls = totalMcpCalls;
+                trace.summary.toolsUsed = toolNames;
+                trace.summary.totalLatencyMs = System.currentTimeMillis() - started;
+                chainTraceService.save(requestId, trace);
                 return;
             }
 
@@ -229,17 +247,67 @@ public class AgentOrchestrator {
 
             List<Map<String, Object>> roundResults = executeAgentToolCalls(requestId, context, plan, availableTools);
             toolResults.addAll(roundResults);
+
+            // Record tool calls in chain trace
+            for (AgentServiceDtos.ToolCall tc : requestedCalls) {
+                if (!toolNames.contains(tc.toolName())) {
+                    toolNames.add(tc.toolName());
+                }
+            }
+            for (Map<String, Object> tr : roundResults) {
+                totalMcpCalls++;
+                String status = String.valueOf(tr.getOrDefault("status", "FAILED"));
+                String tName = String.valueOf(tr.getOrDefault("toolName", "unknown"));
+                String pId = String.valueOf(tr.getOrDefault("projectId", "unknown"));
+                String pName = String.valueOf(tr.getOrDefault("projectName", pId));
+                long tLatency = Long.parseLong(String.valueOf(tr.getOrDefault("latencyMs", 0)));
+
+                String nodeId = "tool_" + sanitizeId(tName) + "_" + sanitizeId(pId) + "_" + totalMcpCalls;
+                Map<String, Object> meta = new LinkedHashMap<>();
+                meta.put("toolName", tName);
+                meta.put("projectId", pId);
+                meta.put("projectName", pName);
+                meta.put("status", status);
+                if (tr.containsKey("arguments")) {
+                    meta.put("request", toJson(tr.get("arguments")));
+                }
+                if (tr.containsKey("result")) {
+                    meta.put("response", truncateJson(toJson(tr.get("result")), 10000));
+                }
+                if (tr.containsKey("error")) {
+                    meta.put("error", tr.get("error"));
+                }
+                trace.addNode(new ChainTrace.Node(nodeId, "mcp_call",
+                        tName + " (" + pName + ")",
+                        status, tLatency, meta));
+                trace.addEdge(new ChainTrace.Edge(prevNodeId, nodeId));
+                prevNodeId = nodeId;
+            }
+
             if (roundResults.isEmpty()) {
                 break;
             }
         }
 
         if (!hasText(answer) && !toolResults.isEmpty()) {
+            long sumStarted = System.currentTimeMillis();
             answer = deepSeekClient.summarize(question, toolResults);
+            long sumLatency = System.currentTimeMillis() - sumStarted;
+            trace.addAnalyzeNode("deepseek_summary", "DeepSeek 汇总",
+                    "toolResults: " + toolResults.size() + " items", answer, sumLatency);
+            trace.addEdge(new ChainTrace.Edge(prevNodeId, "deepseek_summary"));
+            auditService.writeModel(requestId, properties.deepseek().model(), "summarize", "toolResults=" + toolResults.size(), answer, Status.SUCCEEDED, sumLatency, null);
         }
         if (!hasText(answer)) {
             answer = "暂时没有从项目数据中得到可汇总结果。你可以换一种问法，或稍后重试。";
         }
+
+        trace.summary.totalMcpCalls = totalMcpCalls;
+        trace.summary.totalPages = totalMcpCalls;
+        trace.summary.toolsUsed = toolNames;
+        trace.summary.projectsQueried = context.tokens().stream().map(TokenResolver.TokenEntry::projectId).toList();
+        trace.summary.totalLatencyMs = System.currentTimeMillis() - started;
+        chainTraceService.save(requestId, trace);
 
         feishuClient.replyAnswerCard(messageId, question, answer, route.title(), route.cardTemplate());
         auditService.writeMain(
@@ -561,5 +629,13 @@ public class AgentOrchestrator {
         } catch (Exception e) {
             return String.valueOf(value);
         }
+    }
+
+    private String sanitizeId(String s) {
+        return (s != null ? s : "unknown").replaceAll("[^a-zA-Z0-9_]", "_");
+    }
+
+    private String truncateJson(String json, int maxLen) {
+        return json != null && json.length() > maxLen ? json.substring(0, maxLen) + "...(truncated)" : json;
     }
 }
