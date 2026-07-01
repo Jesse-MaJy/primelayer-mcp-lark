@@ -4,12 +4,16 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.larkconnect.agent.ai.AnswerEngineRouter;
 import com.larkconnect.agent.ai.FastGptClient;
 import com.larkconnect.agent.audit.AuditService;
+import com.larkconnect.agent.audit.ChainTrace;
+import com.larkconnect.agent.audit.ChainTraceService;
 import com.larkconnect.agent.common.Status;
 import com.larkconnect.agent.config.AppProperties;
 import com.larkconnect.agent.deepseek.DeepSeekClient;
 import com.larkconnect.agent.deepseek.DeepSeekPlan;
 import com.larkconnect.agent.feishu.FeishuClient;
 import com.larkconnect.agent.mcp.McpAdapter;
+import com.larkconnect.agent.mcp.McpAdapter.PageData;
+import com.larkconnect.agent.mcp.McpAdapter.PaginationResult;
 import com.larkconnect.agent.mcp.McpToolRegistry;
 import com.larkconnect.agent.token.TokenResolver;
 import org.springframework.stereotype.Service;
@@ -35,6 +39,7 @@ public class AgentOrchestrator {
     private final AgentServiceClient agentServiceClient;
     private final IntentRouter intentRouter;
     private final AnswerEngineRouter answerEngineRouter;
+    private final ChainTraceService chainTraceService;
     private static final int MAX_AGENT_SERVICE_ROUNDS = 4;
 
     public AgentOrchestrator(
@@ -49,7 +54,8 @@ public class AgentOrchestrator {
             ObjectMapper objectMapper,
             AgentServiceClient agentServiceClient,
             IntentRouter intentRouter,
-            AnswerEngineRouter answerEngineRouter
+            AnswerEngineRouter answerEngineRouter,
+            ChainTraceService chainTraceService
     ) {
         this.taskService = taskService;
         this.deepSeekClient = deepSeekClient;
@@ -63,6 +69,7 @@ public class AgentOrchestrator {
         this.agentServiceClient = agentServiceClient;
         this.intentRouter = intentRouter;
         this.answerEngineRouter = answerEngineRouter;
+        this.chainTraceService = chainTraceService;
     }
 
     public void process(String requestId) {
@@ -100,7 +107,7 @@ public class AgentOrchestrator {
                 auditService.writeModel(requestId, "agent-service", "agent_service_fallback", question, "", Status.FAILED, 0, e.getMessage());
             }
         }
-        processLegacy(requestId, question, messageId, chatId, openId, chatType, route, started);
+        processWithDeepSeekPlan(requestId, question, messageId, chatId, openId, chatType, route, started);
     }
 
     private void processWithFastGpt(String requestId, String question, String messageId, String chatId, String openId, String chatType, IntentRoute route, long started) {
@@ -249,59 +256,116 @@ public class AgentOrchestrator {
         );
     }
 
-    private void processLegacy(String requestId, String question, String messageId, String chatId, String openId, String chatType, IntentRoute route, long started) {
-        DeepSeekPlan plan = deepSeekClient.plan(requestId, question, chatType);
-        auditService.writeModel(requestId, properties.deepseek().model(), "plan", question, toJson(plan), Status.SUCCEEDED, 0, null);
+    private void processWithDeepSeekPlan(String requestId, String question, String messageId, String chatId, String openId, String chatType, IntentRoute route, long started) {
+        TokenResolver.ResolvedContext context = tokenResolver.resolveCandidates(openId, chatId, chatType, properties.agent().maxProjectsPerQuery());
+        if (context.hasError()) {
+            TokenResolver.McpConfigCheckResult checkResult = tokenResolver.checkMcpConfig(openId, chatId, chatType, properties.agent().maxProjectsPerQuery());
+            String error = checkResult.configured() ? context.errorMessage() : checkResult.reason();
+            String answer = configurationHint(error);
+            feishuClient.replyAnswerCard(messageId, question, answer, "MCP 配置异常", "orange");
+            auditService.writeMain(requestId, openId, chatId, checkResult.primelayerUserId(), List.of(), question, "deepseek_multi_tool", answer, System.currentTimeMillis() - started, error);
+            return;
+        }
+
+        List<Map<String, Object>> availableTools = loadAvailableTools(context.tokens());
+        if (availableTools.isEmpty()) {
+            feishuClient.replyAnswerCard(messageId, question, "当前没有可用的 MCP 工具。", "工具不可用", "orange");
+            auditService.writeMain(requestId, openId, chatId, context.primelayerUserId(), List.of(), question, "deepseek_multi_tool", "无可用 MCP 工具", System.currentTimeMillis() - started, null);
+            return;
+        }
+
+        ChainTrace trace = new ChainTrace(requestId);
+
+        DeepSeekPlan plan = deepSeekClient.planMultiTool(question, availableTools);
+        trace.addPlanNode(question + "\n\n可用工具: " + availableTools.size() + " 个", toJson(plan), System.currentTimeMillis() - started);
+        auditService.writeModel(requestId, properties.deepseek().model(), "plan_multi_tool", question, toJson(plan), Status.SUCCEEDED, 0, null);
+
         if (plan.needClarification()) {
             feishuClient.replyAnswerCard(messageId, question, plan.clarificationQuestion(), "需要补充信息", "orange");
             auditService.writeMain(requestId, openId, chatId, null, List.of(), question, plan.intent(), plan.clarificationQuestion(), System.currentTimeMillis() - started, null);
             return;
         }
 
-        TokenResolver.ResolvedContext context = tokenResolver.resolve(openId, chatId, chatType, plan, properties.agent().maxProjectsPerQuery());
-        if (context.hasError()) {
-            TokenResolver.McpConfigCheckResult checkResult = tokenResolver.checkMcpConfig(openId, chatId, chatType, properties.agent().maxProjectsPerQuery());
-            String error = checkResult.configured() ? context.errorMessage() : checkResult.reason();
-            String answer = projectDataUnavailableMessage();
-            feishuClient.replyAnswerCard(messageId, question, answer, "项目数据暂不可用", "orange");
-            auditService.writeMain(requestId, openId, chatId, checkResult.primelayerUserId(), List.of(), question, plan.intent(), answer, System.currentTimeMillis() - started, error);
-            return;
-        }
+        Map<String, List<Map<String, Object>>> allToolResults = new LinkedHashMap<>();
+        int totalPages = 0;
+        int totalMcpCalls = 0;
+        List<String> toolNames = new ArrayList<>();
+        List<String> projectNames = new ArrayList<>();
+        String prevNodeId = "plan";
 
-        List<Map<String, Object>> toolResults = new ArrayList<>();
-        for (TokenResolver.TokenEntry token : context.tokens()) {
-            for (DeepSeekPlan.ToolCall toolCall : plan.toolCalls()) {
-                long toolStarted = System.currentTimeMillis();
-                try {
-                    toolRegistry.validate(toolCall.toolName(), toolCall.arguments());
-                    Map<String, Object> args = new LinkedHashMap<>(toolCall.arguments());
-                    args.put("project_id", token.projectId());
-                    args.put("primelayer_user_id", context.primelayerUserId());
-                    Map<String, Object> result = mcpAdapter.callTool(token.token(), toolCall.toolName(), args);
-                    toolResults.add(Map.of("projectId", token.projectId(), "projectName", token.projectName(), "status", Status.SUCCEEDED, "result", result));
-                    auditService.writeTool(requestId, token.projectId(), context.primelayerUserId(), toolCall.toolName(), args, Status.SUCCEEDED, System.currentTimeMillis() - toolStarted, null);
-                } catch (Exception e) {
-                    toolResults.add(Map.of("projectId", token.projectId(), "projectName", token.projectName(), "status", Status.FAILED, "error", e.getMessage()));
-                    auditService.writeTool(requestId, token.projectId(), context.primelayerUserId(), toolCall.toolName(), toolCall.arguments(), Status.FAILED, System.currentTimeMillis() - toolStarted, e.getMessage());
+        for (DeepSeekPlan.ToolCall toolCall : plan.toolCalls()) {
+            String toolName = toolCall.toolName();
+            toolNames.add(toolName);
+            List<Map<String, Object>> toolAllResults = new ArrayList<>();
+
+            for (TokenResolver.TokenEntry token : context.tokens()) {
+                if (!projectNames.contains(token.projectId())) {
+                    projectNames.add(token.projectId());
+                }
+                Map<String, Object> args = new LinkedHashMap<>(toolCall.arguments());
+                args.put("project_id", token.projectId());
+                args.put("primelayer_user_id", context.primelayerUserId());
+
+                PaginationResult result = mcpAdapter.callToolWithPagination(token.token(), toolName, args);
+                totalPages += result.totalPages();
+                totalMcpCalls += result.pages().size();
+
+                for (int i = 0; i < result.pages().size(); i++) {
+                    PageData page = result.pages().get(i);
+                    trace.addMcpCallNode(toolName, token.projectId(), token.projectName(), page, i);
+                    String nodeId = trace.lastNodeId();
+                    trace.addEdge(new ChainTrace.Edge(prevNodeId, nodeId));
+                    prevNodeId = nodeId;
+
+                    auditService.writeTool(requestId, token.projectId(), context.primelayerUserId(), toolName, args, page.status(), page.latencyMs(), page.error());
+                }
+
+                for (PageData page : result.pages()) {
+                    if (Status.SUCCEEDED.equals(page.status()) && page.rawResponse() != null) {
+                        toolAllResults.add(page.rawResponse());
+                    }
                 }
             }
+            allToolResults.put(toolName, toolAllResults);
         }
 
-        String answer = deepSeekClient.summarize(question, toolResults);
-        auditService.writeModel(requestId, properties.deepseek().model(), "summarize", "toolResults=" + toolResults.size(), answer, Status.SUCCEEDED, 0, null);
-        feishuClient.replyAnswerCard(messageId, question, answer, route.title(), route.cardTemplate());
-        auditService.writeMain(
-                requestId,
-                openId,
-                chatId,
-                context.primelayerUserId(),
-                context.tokens().stream().map(TokenResolver.TokenEntry::projectId).toList(),
-                question,
-                plan.intent(),
-                answer,
-                System.currentTimeMillis() - started,
-                null
-        );
+        List<DeepSeekClient.PerToolAnalysis> perToolAnalyses = new ArrayList<>();
+        for (Map.Entry<String, List<Map<String, Object>>> entry : allToolResults.entrySet()) {
+            String toolName = entry.getKey();
+            List<Map<String, Object>> results = entry.getValue();
+            if (results.isEmpty()) continue;
+
+            long analyzeStarted = System.currentTimeMillis();
+            String analysis = deepSeekClient.analyzePerTool(toolName, results);
+            long analyzeLatency = System.currentTimeMillis() - analyzeStarted;
+
+            String nodeId = "analyze_per_" + toolName.replaceAll("[^a-zA-Z0-9_]", "_");
+            trace.addAnalyzeNode(nodeId, "阶段1: 分析 " + toolName, "全量数据（" + results.size() + " 页）", analysis, analyzeLatency);
+            trace.addEdge(new ChainTrace.Edge(prevNodeId, nodeId));
+            prevNodeId = nodeId;
+
+            perToolAnalyses.add(new DeepSeekClient.PerToolAnalysis(toolName, analysis));
+            auditService.writeModel(requestId, properties.deepseek().model(), "analyze_per_tool_" + toolName, "tool=" + toolName + " pages=" + results.size(), analysis, Status.SUCCEEDED, analyzeLatency, null);
+        }
+
+        long crossStarted = System.currentTimeMillis();
+        String finalAnswer = deepSeekClient.analyzeCross(question, perToolAnalyses);
+        long crossLatency = System.currentTimeMillis() - crossStarted;
+
+        trace.addAnalyzeNode("analyze_cross", "阶段2: 交叉分析", question + "\n\n" + perToolAnalyses.size() + " 个工具分析结果", finalAnswer, crossLatency);
+        trace.addEdge(new ChainTrace.Edge(prevNodeId, "analyze_cross"));
+        auditService.writeModel(requestId, properties.deepseek().model(), "analyze_cross", question, finalAnswer, Status.SUCCEEDED, crossLatency, null);
+
+        trace.summary.totalMcpCalls = totalMcpCalls;
+        trace.summary.totalPages = totalPages;
+        trace.summary.totalLatencyMs = System.currentTimeMillis() - started;
+        trace.summary.toolsUsed = toolNames;
+        trace.summary.projectsQueried = projectNames;
+
+        chainTraceService.save(requestId, trace);
+
+        feishuClient.replyAnswerCard(messageId, question, finalAnswer, route.title(), route.cardTemplate());
+        auditService.writeMain(requestId, openId, chatId, context.primelayerUserId(), projectNames, question, plan.intent(), finalAnswer, System.currentTimeMillis() - started, null);
     }
 
     private AgentServiceDtos.AgentAnswerRequest agentRequest(
