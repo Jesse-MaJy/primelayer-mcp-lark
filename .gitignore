@@ -20,3 +20,7 @@ pnpm-debug.log*
 .idea/
 .vscode/
 .DS_Store
+
+# Local Codex / worktree scratch
+.superpowers/
+.worktrees/
