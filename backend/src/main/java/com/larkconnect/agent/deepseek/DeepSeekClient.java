@@ -384,4 +384,142 @@ public class DeepSeekClient {
         }
         return message;
     }
+
+    public DeepSeekPlan planMultiTool(String question, List<Map<String, Object>> availableTools) {
+        if (properties.deepseek().apiKey() == null || properties.deepseek().apiKey().isBlank()) {
+            return heuristicPlan(question, "p2p");
+        }
+        try {
+            String toolsJson = objectMapper.writeValueAsString(availableTools);
+            String prompt = """
+                    你是 Agent Gateway 的意图规划器。只能输出 JSON，不要输出解释。
+                    JSON 字段：
+                    {
+                      "intent": "string",
+                      "projectScope": "single_project|current_chat_project|all_accessible_projects|unknown",
+                      "projectHints": ["项目名"],
+                      "toolCalls": [
+                        {
+                          "toolName": "必须是可用工具列表中的名称",
+                          "arguments": {"参数名": "值"},
+                          "reason": "为什么选择这个工具"
+                        }
+                      ],
+                      "needClarification": false,
+                      "clarificationQuestion": null,
+                      "answerStyle": "normal"
+                    }
+
+                    重要规则：
+                    - toolCalls 是数组，可以包含多个工具（0-5个），一次性规划所有需要调用的工具
+                    - 每个 toolName 必须严格来自可用工具列表
+                    - 不要选择功能重复的工具，优先选择名称中包含 query_/get_/list_/search_ 的只读工具
+                    - 如果用户问题涉及多个维度（如同时问任务和健康度），选择一个覆盖最广的组合
+                    - arguments 不传 token、密钥或认证信息
+
+                    可用工具：%s
+                    用户问题：%s
+                    """.formatted(toolsJson, question);
+
+            Map<String, Object> response = restClient.post()
+                    .uri("/chat/completions")
+                    .header("Authorization", "Bearer " + properties.deepseek().apiKey())
+                    .body(Map.of(
+                            "model", properties.deepseek().model(),
+                            "messages", List.of(Map.of("role", "user", "content", prompt)),
+                            "response_format", Map.of("type", "json_object"),
+                            "temperature", 0
+                    ))
+                    .retrieve()
+                    .body(Map.class);
+
+            JsonNode content = objectMapper.valueToTree(response).path("choices").path(0).path("message").path("content");
+            return normalizePlan(content.asText(), question, "p2p");
+        } catch (Exception e) {
+            return heuristicPlan(question, "p2p");
+        }
+    }
+
+    public String analyzePerTool(String toolName, List<Map<String, Object>> allPageResults) {
+        if (properties.deepseek().apiKey() == null || properties.deepseek().apiKey().isBlank()) {
+            return "工具 " + toolName + " 返回 " + allPageResults.size() + " 页数据（未分析）";
+        }
+        try {
+            String dataJson = objectMapper.writeValueAsString(allPageResults);
+            String prompt = """
+                    你是数据分析助手。基于 MCP 工具返回的全部数据做独立分析。
+
+                    工具名称：%s
+                    数据（已合并所有分页）：%s
+
+                    请输出结构化分析：
+                    1. 数据总量和关键统计
+                    2. 数据中的主要发现和趋势
+                    3. 异常值和需要关注的风险点
+                    4. 数据质量评估（是否完整、是否有缺失）
+
+                    只分析数据本身，不要提出需要补充查询的建议。
+                    """.formatted(toolName,
+                    dataJson.length() > 8000 ? dataJson.substring(0, 8000) + "...(truncated)" : dataJson);
+
+            Map<String, Object> response = restClient.post()
+                    .uri("/chat/completions")
+                    .header("Authorization", "Bearer " + properties.deepseek().apiKey())
+                    .body(Map.of(
+                            "model", properties.deepseek().model(),
+                            "messages", List.of(Map.of("role", "user", "content", prompt)),
+                            "temperature", 0.2
+                    ))
+                    .retrieve()
+                    .body(Map.class);
+
+            return objectMapper.valueToTree(response).path("choices").path(0).path("message").path("content").asText();
+        } catch (Exception e) {
+            return "工具 " + toolName + " 数据分析失败: " + sanitizeError(e.getMessage());
+        }
+    }
+
+    public String analyzeCross(String question, List<PerToolAnalysis> perToolAnalyses) {
+        if (properties.deepseek().apiKey() == null || properties.deepseek().apiKey().isBlank()) {
+            return fallbackSummary(question, List.of());
+        }
+        try {
+            StringBuilder analyses = new StringBuilder();
+            for (int i = 0; i < perToolAnalyses.size(); i++) {
+                PerToolAnalysis a = perToolAnalyses.get(i);
+                analyses.append("[").append(i + 1).append("] 工具: ").append(a.toolName()).append("\n")
+                        .append("分析: ").append(a.analysis()).append("\n\n");
+            }
+
+            Map<String, Object> response = restClient.post()
+                    .uri("/chat/completions")
+                    .header("Authorization", "Bearer " + properties.deepseek().apiKey())
+                    .body(Map.of(
+                            "model", properties.deepseek().model(),
+                            "messages", List.of(Map.of("role", "user", "content", """
+                                    你是商业数据分析师。基于多个维度独立分析结果，做交叉综合分析，输出最终答案。
+
+                                    用户原始问题：%s
+
+                                    各维度独立分析：
+                                    %s
+
+                                    要求：
+                                    - 用自然语言回答用户问题，直接给结论
+                                    - 引用各维度关键数据支撑结论
+                                    - 说明数据范围和局限性
+                                    - 不要编造数据
+                                    """.formatted(question, analyses.toString()))),
+                            "temperature", 0.2
+                    ))
+                    .retrieve()
+                    .body(Map.class);
+
+            return objectMapper.valueToTree(response).path("choices").path(0).path("message").path("content").asText();
+        } catch (Exception e) {
+            return fallbackSummary(question, List.of());
+        }
+    }
+
+    public record PerToolAnalysis(String toolName, String analysis) {}
 }
