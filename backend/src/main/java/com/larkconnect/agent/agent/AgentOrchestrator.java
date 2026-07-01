@@ -1,6 +1,8 @@
 package com.larkconnect.agent.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.larkconnect.agent.ai.AnswerEngineRouter;
+import com.larkconnect.agent.ai.FastGptClient;
 import com.larkconnect.agent.audit.AuditService;
 import com.larkconnect.agent.common.Status;
 import com.larkconnect.agent.config.AppProperties;
@@ -32,6 +34,7 @@ public class AgentOrchestrator {
     private final ObjectMapper objectMapper;
     private final AgentServiceClient agentServiceClient;
     private final IntentRouter intentRouter;
+    private final AnswerEngineRouter answerEngineRouter;
     private static final int MAX_AGENT_SERVICE_ROUNDS = 4;
 
     public AgentOrchestrator(
@@ -45,7 +48,8 @@ public class AgentOrchestrator {
             AppProperties properties,
             ObjectMapper objectMapper,
             AgentServiceClient agentServiceClient,
-            IntentRouter intentRouter
+            IntentRouter intentRouter,
+            AnswerEngineRouter answerEngineRouter
     ) {
         this.taskService = taskService;
         this.deepSeekClient = deepSeekClient;
@@ -58,6 +62,7 @@ public class AgentOrchestrator {
         this.objectMapper = objectMapper;
         this.agentServiceClient = agentServiceClient;
         this.intentRouter = intentRouter;
+        this.answerEngineRouter = answerEngineRouter;
     }
 
     public void process(String requestId) {
@@ -74,6 +79,14 @@ public class AgentOrchestrator {
             processMcpConfigStatus(requestId, question, messageId, chatId, openId, chatType, route, started);
             return;
         }
+        if (answerEngineRouter.shouldUseFastGpt(route)) {
+            try {
+                processWithFastGpt(requestId, question, messageId, chatId, openId, chatType, route, started);
+                return;
+            } catch (Exception e) {
+                auditService.writeModel(requestId, "fastgpt", "fastgpt_fallback", question, "", Status.FAILED, System.currentTimeMillis() - started, readableError(e));
+            }
+        }
         if (!route.requiresMcp()) {
             processNonMcpRoute(requestId, question, messageId, chatId, openId, route, started);
             return;
@@ -88,6 +101,19 @@ public class AgentOrchestrator {
             }
         }
         processLegacy(requestId, question, messageId, chatId, openId, chatType, route, started);
+    }
+
+    private void processWithFastGpt(String requestId, String question, String messageId, String chatId, String openId, String chatType, IntentRoute route, long started) {
+        FastGptClient.FastGptResponse response = answerEngineRouter.answerWithFastGpt(new FastGptClient.FastGptRequest(
+                requestId,
+                question,
+                openId,
+                fastGptChatId(openId, chatId, chatType),
+                chatType
+        ));
+        auditService.writeModel(requestId, "fastgpt", "fastgpt_answer", question, response.rawResponse(), Status.SUCCEEDED, response.latencyMs(), null);
+        feishuClient.replyAnswerCard(messageId, question, response.answer(), route.title(), route.cardTemplate());
+        auditService.writeMain(requestId, openId, chatId, null, List.of(), question, "fastgpt_answer", response.answer(), System.currentTimeMillis() - started, null);
     }
 
     private void processNonMcpRoute(String requestId, String question, String messageId, String chatId, String openId, IntentRoute route, long started) {
@@ -398,6 +424,16 @@ public class AgentOrchestrator {
             return plan.projectIds();
         }
         return context.tokens().stream().map(TokenResolver.TokenEntry::projectId).toList();
+    }
+
+    private String fastGptChatId(String openId, String chatId, String chatType) {
+        if ("group".equalsIgnoreCase(chatType) && hasText(chatId)) {
+            return chatId;
+        }
+        if (hasText(openId)) {
+            return openId;
+        }
+        return hasText(chatId) ? chatId : "unknown";
     }
 
     private boolean hasText(String value) {

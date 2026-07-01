@@ -9,18 +9,32 @@ public final class AdminDtos {
     public record LoginResponse(String token, long expiresInSeconds) {}
 
     public record UserBindingRequest(
+            String personName,
             @NotBlank String feishuOpenId,
-            @NotBlank String primelayerUserId,
+            String primelayerUserId,
             String primelayerUserName,
             String status
     ) {}
 
     public record ProjectTokenRequest(
-            @NotBlank String primelayerUserId,
-            @NotBlank String projectId,
-            @NotBlank String projectName,
-            @NotBlank String mcpToken,
-            String tokenStatus
+            Long id,
+            String ownerType,
+            String ownerId,
+            String primelayerUserId,
+            String projectId,
+            String projectName,
+            String projectRemark,
+            String mcpToken,
+            String tokenStatus,
+            Boolean replaceToken,
+            Boolean manualProjectConfirmed
+    ) {}
+
+    public record ProjectTokenVerifyRequest(
+            String ownerType,
+            String ownerId,
+            String primelayerUserId,
+            String mcpToken
     ) {}
 
     public record ChatProjectBindingRequest(
@@ -28,5 +42,23 @@ public final class AdminDtos {
             @NotBlank String projectId,
             @NotBlank String projectName,
             String status
+    ) {}
+
+    public record AiSettingsRequest(
+            String engine,
+            String fastGptBaseUrl,
+            String fastGptModel,
+            String fastGptApiKey,
+            Integer fastGptTimeoutMs,
+            Boolean fastGptMemoryEnabled
+    ) {}
+
+    public record AiSettingsResponse(
+            String engine,
+            String fastGptBaseUrl,
+            String fastGptModel,
+            boolean fastGptApiKeyConfigured,
+            int fastGptTimeoutMs,
+            boolean fastGptMemoryEnabled
     ) {}
 }

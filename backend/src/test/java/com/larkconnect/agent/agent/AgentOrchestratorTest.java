@@ -1,6 +1,11 @@
 package com.larkconnect.agent.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.larkconnect.agent.ai.AiEngineType;
+import com.larkconnect.agent.ai.AiRuntimeConfigService;
+import com.larkconnect.agent.ai.AnswerEngineRouter;
+import com.larkconnect.agent.ai.FastGptAnswerEngine;
+import com.larkconnect.agent.ai.FastGptClient;
 import com.larkconnect.agent.audit.AuditService;
 import com.larkconnect.agent.common.Status;
 import com.larkconnect.agent.config.AppProperties;
@@ -22,6 +27,94 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class AgentOrchestratorTest {
+    @Test
+    void usesFastGptForNormalQuestionsWhenSelectedAndSkipsLocalMcpFlow() {
+        FakeTaskService taskService = new FakeTaskService(task("Roche今日施工情况"));
+        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
+        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
+        FakeFeishuClient feishuClient = new FakeFeishuClient();
+        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
+        FakeFastGptClient fastGptClient = new FakeFastGptClient("FastGPT 已回答");
+        FakeAuditService auditService = new FakeAuditService();
+
+        orchestrator(
+                taskService,
+                new FakeDeepSeekClient(),
+                tokenResolver,
+                mcpAdapter,
+                feishuClient,
+                agentServiceClient,
+                router(AiEngineType.FASTGPT, fastGptClient),
+                auditService
+        ).process("req-fastgpt");
+
+        assertThat(fastGptClient.requests).hasSize(1);
+        assertThat(fastGptClient.requests.get(0).question()).isEqualTo("Roche今日施工情况");
+        assertThat(fastGptClient.requests.get(0).chatId()).isEqualTo("open-1");
+        assertThat(mcpAdapter.calledTools).isEmpty();
+        assertThat(agentServiceClient.requests).isZero();
+        assertThat(feishuClient.lastAnswer).isEqualTo("FastGPT 已回答");
+        assertThat(auditService.mainIntents).containsExactly("fastgpt_answer");
+        assertThat(auditService.modelPurposes).containsExactly("fastgpt_answer");
+    }
+
+    @Test
+    void fallsBackToLocalAgentWhenFastGptFails() {
+        FakeTaskService taskService = new FakeTaskService(task("Roche今日施工情况"));
+        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
+        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
+        mcpAdapter.tools = tools("get_report");
+        mcpAdapter.results.put("get_report", Map.of("content", "施工正常"));
+        FakeFeishuClient feishuClient = new FakeFeishuClient();
+        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
+        agentServiceClient.responses.add(answerWithCalls(new AgentServiceDtos.ToolCall("get_report", Map.of(), List.of("Roche"), "日报")));
+        agentServiceClient.responses.add(finalAnswer("本地 agent 已回答"));
+        FakeFastGptClient fastGptClient = new FakeFastGptClient(new IllegalStateException("FastGPT timeout"));
+        FakeAuditService auditService = new FakeAuditService();
+
+        orchestrator(
+                taskService,
+                new FakeDeepSeekClient(),
+                tokenResolver,
+                mcpAdapter,
+                feishuClient,
+                agentServiceClient,
+                router(AiEngineType.FASTGPT, fastGptClient),
+                auditService
+        ).process("req-fallback");
+
+        assertThat(fastGptClient.requests).hasSize(1);
+        assertThat(mcpAdapter.calledTools).containsExactly("get_report");
+        assertThat(feishuClient.lastAnswer).isEqualTo("本地 agent 已回答");
+        assertThat(auditService.modelPurposes).contains("fastgpt_fallback");
+    }
+
+    @Test
+    void keepsMcpConfigStatusLocalWhenFastGptIsSelected() {
+        FakeTaskService taskService = new FakeTaskService(task("配置正常"));
+        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
+        tokenResolver.checkResult = TokenResolver.McpConfigCheckResult.configured("open-1", "pl-user", "OPEN_ID", "open-1", List.of(new TokenResolver.ProjectRef("Roche", "Roche")));
+        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
+        mcpAdapter.tools = tools("get_account_info");
+        FakeFeishuClient feishuClient = new FakeFeishuClient();
+        FakeFastGptClient fastGptClient = new FakeFastGptClient("FastGPT should not answer");
+
+        orchestrator(
+                taskService,
+                new FakeDeepSeekClient(),
+                tokenResolver,
+                mcpAdapter,
+                feishuClient,
+                new FakeAgentServiceClient(),
+                router(AiEngineType.FASTGPT, fastGptClient),
+                new FakeAuditService()
+        ).process("req-config");
+
+        assertThat(fastGptClient.requests).isEmpty();
+        assertThat(feishuClient.lastTitle).isEqualTo("MCP 配置状态");
+        assertThat(feishuClient.lastAnswer).contains("MCP 配置已绑定");
+    }
+
     @Test
     void executesAgentServiceToolCallsUntilFinalAnswer() {
         FakeTaskService taskService = new FakeTaskService(task("Roche今日施工情况"));
@@ -71,6 +164,28 @@ class AgentOrchestratorTest {
             FeishuClient feishuClient,
             AgentServiceClient agentServiceClient
     ) {
+        return orchestrator(
+                taskService,
+                deepSeekClient,
+                tokenResolver,
+                mcpAdapter,
+                feishuClient,
+                agentServiceClient,
+                router(AiEngineType.LOCAL_AGENT, new FakeFastGptClient("unused")),
+                new FakeAuditService()
+        );
+    }
+
+    private AgentOrchestrator orchestrator(
+            AgentTaskService taskService,
+            DeepSeekClient deepSeekClient,
+            TokenResolver tokenResolver,
+            McpAdapter mcpAdapter,
+            FeishuClient feishuClient,
+            AgentServiceClient agentServiceClient,
+            AnswerEngineRouter answerEngineRouter,
+            AuditService auditService
+    ) {
         return new AgentOrchestrator(
                 taskService,
                 deepSeekClient,
@@ -78,12 +193,17 @@ class AgentOrchestratorTest {
                 new McpToolRegistry(),
                 mcpAdapter,
                 feishuClient,
-                new FakeAuditService(),
+                auditService,
                 properties(),
                 new ObjectMapper(),
                 agentServiceClient,
-                new IntentRouter()
+                new IntentRouter(),
+                answerEngineRouter
         );
+    }
+
+    private AnswerEngineRouter router(AiEngineType engineType, FastGptClient fastGptClient) {
+        return new AnswerEngineRouter(new FakeAiRuntimeConfigService(engineType), new FastGptAnswerEngine(fastGptClient));
     }
 
     private static Map<String, Object> task(String question) {
@@ -163,6 +283,10 @@ class AgentOrchestratorTest {
         public McpConfigCheckResult checkMcpConfig(String openId, String chatId, String chatType, int maxProjects) {
             return checkResult;
         }
+
+        @Override
+        public void updateVerificationStatus(Long tokenId, String verifyStatus, String verifyError) {
+        }
     }
 
     private static class FakeMcpAdapter extends McpAdapter {
@@ -223,6 +347,7 @@ class AgentOrchestratorTest {
 
     private static class FakeAgentServiceClient extends AgentServiceClient {
         private final Deque<AgentServiceDtos.AgentAnswerResponse> responses = new ArrayDeque<>();
+        private int requests;
 
         FakeAgentServiceClient() {
             super(properties(), RestClient.builder());
@@ -235,17 +360,71 @@ class AgentOrchestratorTest {
 
         @Override
         public AgentServiceDtos.AgentAnswerResponse answer(AgentServiceDtos.AgentAnswerRequest request) {
+            requests++;
             return responses.isEmpty() ? finalAnswer("默认回答") : responses.removeFirst();
         }
     }
 
+    private static class FakeAiRuntimeConfigService extends AiRuntimeConfigService {
+        private final AiSettings settings;
+
+        FakeAiRuntimeConfigService(AiEngineType engineType) {
+            super(null, null);
+            this.settings = new AiSettings(
+                    engineType,
+                    "http://fastgpt.local",
+                    "fastgpt",
+                    "fastgpt-key",
+                    true,
+                    30000,
+                    true
+            );
+        }
+
+        @Override
+        public AiSettings loadSettings() {
+            return settings;
+        }
+    }
+
+    private static class FakeFastGptClient extends FastGptClient {
+        private final List<FastGptRequest> requests = new ArrayList<>();
+        private final String answer;
+        private final RuntimeException failure;
+
+        FakeFastGptClient(String answer) {
+            super(null, null, null);
+            this.answer = answer;
+            this.failure = null;
+        }
+
+        FakeFastGptClient(RuntimeException failure) {
+            super(null, null, null);
+            this.answer = null;
+            this.failure = failure;
+        }
+
+        @Override
+        public FastGptResponse answer(FastGptRequest request, AiRuntimeConfigService.AiSettings settings) {
+            requests.add(request);
+            if (failure != null) {
+                throw failure;
+            }
+            return new FastGptResponse(answer, "raw", 12);
+        }
+    }
+
     private static class FakeAuditService extends AuditService {
+        private final List<String> mainIntents = new ArrayList<>();
+        private final List<String> modelPurposes = new ArrayList<>();
+
         FakeAuditService() {
             super(null, new ObjectMapper());
         }
 
         @Override
         public void writeMain(String requestId, String openId, String chatId, String primelayerUserId, List<String> projectIds, String question, String intent, String answer, long latencyMs, String error) {
+            mainIntents.add(intent);
         }
 
         @Override
@@ -255,6 +434,7 @@ class AgentOrchestratorTest {
         @Override
         public void writeModel(String requestId, String model, String purpose, String inputSummary, String outputText, String status, long latencyMs, String error) {
             assertThat(status).isIn(Status.SUCCEEDED, Status.FAILED);
+            modelPurposes.add(purpose);
         }
     }
 }

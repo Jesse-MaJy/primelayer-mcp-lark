@@ -11,6 +11,7 @@
 <script setup lang="ts">
 import CrudPage from '../components/CrudPage.vue'
 import { adminApi } from '../api/admin'
+import { timeColumn } from '../utils/time'
 
 const columns = [
   { title: 'Primelayer 用户 ID', dataIndex: 'primelayer_user_id' },
@@ -19,7 +20,7 @@ const columns = [
   { title: 'Token Hash 后缀', dataIndex: 'token_hash_suffix' },
   { title: '状态', dataIndex: 'token_status' },
   { title: '导入人', dataIndex: 'imported_by' },
-  { title: '最近使用', dataIndex: 'last_used_at' }
+  timeColumn('最近使用', 'last_used_at')
 ]
 
 const fields = [

@@ -19,14 +19,48 @@ public final class DebugDtos {
             List<Map<String, Object>> toolResults
     ) {}
 
+    public record DeepSeekConnectionRequest(
+            String prompt
+    ) {}
+
+    public record FastGptConnectionRequest(
+            String prompt
+    ) {}
+
     public record McpCallRequest(
             @NotNull Long tokenId,
             @NotBlank String toolName,
             Map<String, Object> arguments
     ) {}
 
+    public record McpToolsRequest(
+            @NotNull Long tokenId
+    ) {}
+
+    public record McpQuestionRequest(
+            @NotNull Long tokenId,
+            @NotBlank String question
+    ) {}
+
     public record FeishuMockEventRequest(
             @NotNull Map<String, Object> event
+    ) {}
+
+    public record FeishuReplyTestRequest(
+            @NotBlank String messageId,
+            String text
+    ) {}
+
+    public record FeishuCardSendRequest(
+            @NotBlank String receiveIdType,
+            @NotBlank String receiveId,
+            @NotNull Map<String, Object> card
+    ) {}
+
+    public record FeishuCardBatchSendRequest(
+            @NotBlank String receiveIdType,
+            @NotNull List<String> receiveIds,
+            @NotNull Map<String, Object> card
     ) {}
 
     public record AgentQueryRequest(

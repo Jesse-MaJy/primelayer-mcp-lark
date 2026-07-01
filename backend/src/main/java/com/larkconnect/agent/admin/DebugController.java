@@ -30,6 +30,16 @@ public class DebugController {
         return ApiResponse.ok(debugService.plan(request));
     }
 
+    @PostMapping("/deepseek/connection")
+    public ApiResponse<Map<String, Object>> testDeepSeekConnection(@RequestBody(required = false) DebugDtos.DeepSeekConnectionRequest request) {
+        return ApiResponse.ok(debugService.testDeepSeekConnection(request));
+    }
+
+    @PostMapping("/fastgpt/connection")
+    public ApiResponse<Map<String, Object>> testFastGptConnection(@RequestBody(required = false) DebugDtos.FastGptConnectionRequest request) {
+        return ApiResponse.ok(debugService.testFastGptConnection(request));
+    }
+
     @PostMapping("/deepseek/summarize")
     public ApiResponse<Map<String, Object>> summarize(@Valid @RequestBody DebugDtos.DeepSeekSummarizeRequest request) {
         return ApiResponse.ok(debugService.summarize(request));
@@ -40,9 +50,39 @@ public class DebugController {
         return ApiResponse.ok(debugService.callMcp(request));
     }
 
+    @PostMapping("/mcp/tools")
+    public ApiResponse<Map<String, Object>> listMcpTools(@Valid @RequestBody DebugDtos.McpToolsRequest request) {
+        return ApiResponse.ok(debugService.listMcpTools(request));
+    }
+
+    @PostMapping("/mcp/question")
+    public ApiResponse<Map<String, Object>> askMcpByQuestion(@Valid @RequestBody DebugDtos.McpQuestionRequest request) {
+        return ApiResponse.ok(debugService.askMcpByQuestion(request));
+    }
+
     @PostMapping("/feishu/mock-event")
     public ApiResponse<Map<String, Object>> mockFeishuEvent(@Valid @RequestBody DebugDtos.FeishuMockEventRequest request) {
         return ApiResponse.ok(debugService.mockFeishuEvent(request));
+    }
+
+    @GetMapping("/feishu/token")
+    public ApiResponse<Map<String, Object>> checkFeishuToken() {
+        return ApiResponse.ok(debugService.checkFeishuToken());
+    }
+
+    @PostMapping("/feishu/reply-test")
+    public ApiResponse<Map<String, Object>> testFeishuReply(@Valid @RequestBody DebugDtos.FeishuReplyTestRequest request) {
+        return ApiResponse.ok(debugService.testFeishuReply(request));
+    }
+
+    @PostMapping("/feishu/card")
+    public ApiResponse<Map<String, Object>> sendFeishuCard(@Valid @RequestBody DebugDtos.FeishuCardSendRequest request) {
+        return ApiResponse.ok(debugService.sendFeishuCard(request));
+    }
+
+    @PostMapping("/feishu/card-batch")
+    public ApiResponse<Map<String, Object>> sendFeishuCardBatch(@Valid @RequestBody DebugDtos.FeishuCardBatchSendRequest request) {
+        return ApiResponse.ok(debugService.sendFeishuCardBatch(request));
     }
 
     @PostMapping("/agent/query")

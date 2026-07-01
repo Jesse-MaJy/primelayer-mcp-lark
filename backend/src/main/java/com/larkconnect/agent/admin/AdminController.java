@@ -1,9 +1,11 @@
 package com.larkconnect.agent.admin;
 
+import com.larkconnect.agent.ai.AiRuntimeConfigService;
 import com.larkconnect.agent.common.ApiResponse;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -15,9 +17,11 @@ import java.util.Map;
 @RequestMapping("/api/admin")
 public class AdminController {
     private final AdminService adminService;
+    private final AiRuntimeConfigService aiRuntimeConfigService;
 
-    public AdminController(AdminService adminService) {
+    public AdminController(AdminService adminService, AiRuntimeConfigService aiRuntimeConfigService) {
         this.adminService = adminService;
+        this.aiRuntimeConfigService = aiRuntimeConfigService;
     }
 
     @PostMapping("/login")
@@ -39,6 +43,11 @@ public class AdminController {
     @GetMapping("/project-tokens")
     public ApiResponse<List<Map<String, Object>>> listProjectTokens() {
         return ApiResponse.ok(adminService.listProjectTokens());
+    }
+
+    @PostMapping("/project-tokens/verify")
+    public ApiResponse<Map<String, Object>> verifyProjectToken(@Valid @RequestBody AdminDtos.ProjectTokenVerifyRequest request) {
+        return ApiResponse.ok(adminService.verifyProjectToken(request));
     }
 
     @PostMapping("/project-tokens")
@@ -66,5 +75,20 @@ public class AdminController {
     @GetMapping("/agent-tasks")
     public ApiResponse<List<Map<String, Object>>> listAgentTasks() {
         return ApiResponse.ok(adminService.listAgentTasks());
+    }
+
+    @GetMapping("/feishu-messages")
+    public ApiResponse<List<Map<String, Object>>> listFeishuMessages() {
+        return ApiResponse.ok(adminService.listFeishuMessages());
+    }
+
+    @GetMapping("/ai-settings")
+    public ApiResponse<AdminDtos.AiSettingsResponse> aiSettings() {
+        return ApiResponse.ok(aiRuntimeConfigService.publicSettings());
+    }
+
+    @PutMapping("/ai-settings")
+    public ApiResponse<AdminDtos.AiSettingsResponse> saveAiSettings(@RequestBody AdminDtos.AiSettingsRequest request) {
+        return ApiResponse.ok(aiRuntimeConfigService.saveSettings(request));
     }
 }

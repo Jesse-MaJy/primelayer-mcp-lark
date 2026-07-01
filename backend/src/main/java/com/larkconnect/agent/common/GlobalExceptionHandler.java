@@ -8,10 +8,20 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
-    @ExceptionHandler({IllegalArgumentException.class, MethodArgumentNotValidException.class})
+    @ExceptionHandler(IllegalArgumentException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
-    public ApiResponse<Void> badRequest(Exception e) {
+    public ApiResponse<Void> badRequest(IllegalArgumentException e) {
         return ApiResponse.error(e.getMessage());
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ApiResponse<Void> validationError(MethodArgumentNotValidException e) {
+        String message = e.getBindingResult().getFieldErrors().stream()
+                .findFirst()
+                .map(error -> error.getField() + " " + error.getDefaultMessage())
+                .orElse("请求参数不完整");
+        return ApiResponse.error(message);
     }
 
     @ExceptionHandler(Exception.class)

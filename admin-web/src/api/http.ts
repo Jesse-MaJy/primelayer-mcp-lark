@@ -21,5 +21,14 @@ http.interceptors.response.use(
     }
     return body?.data ?? body
   },
-  (error) => Promise.reject(error)
+  (error) => {
+    const body = error?.response?.data
+    if (body?.error) {
+      return Promise.reject(new Error(body.error))
+    }
+    if (body?.message) {
+      return Promise.reject(new Error(body.message))
+    }
+    return Promise.reject(error)
+  }
 )

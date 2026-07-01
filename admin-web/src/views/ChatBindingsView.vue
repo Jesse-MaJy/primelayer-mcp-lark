@@ -11,6 +11,7 @@
 <script setup lang="ts">
 import CrudPage from '../components/CrudPage.vue'
 import { adminApi } from '../api/admin'
+import { timeColumn } from '../utils/time'
 
 const columns = [
   { title: '飞书群 ID', dataIndex: 'feishu_chat_id' },
@@ -18,7 +19,7 @@ const columns = [
   { title: '项目名称', dataIndex: 'project_name' },
   { title: '状态', dataIndex: 'status' },
   { title: '创建人', dataIndex: 'created_by' },
-  { title: '更新时间', dataIndex: 'updated_at' }
+  timeColumn('更新时间', 'updated_at')
 ]
 
 const fields = [

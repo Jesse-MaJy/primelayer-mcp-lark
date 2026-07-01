@@ -3,10 +3,11 @@
     <a-layout-sider width="232" theme="light">
       <div class="brand">Lark Connect</div>
       <a-menu mode="inline" :selected-keys="[route.path]">
-        <a-menu-item key="/user-bindings" @click="go('/user-bindings')">用户绑定</a-menu-item>
-        <a-menu-item key="/project-tokens" @click="go('/project-tokens')">项目 Token</a-menu-item>
+        <a-menu-item key="/people-configs" @click="go('/people-configs')">人员配置</a-menu-item>
         <a-menu-item key="/chat-bindings" @click="go('/chat-bindings')">群项目绑定</a-menu-item>
+        <a-menu-item key="/system-settings" @click="go('/system-settings')">系统配置</a-menu-item>
         <a-menu-item key="/test-center" @click="go('/test-center')">测试中心</a-menu-item>
+        <a-menu-item key="/feishu-messages" @click="go('/feishu-messages')">消息记录</a-menu-item>
         <a-menu-item key="/audit-logs" @click="go('/audit-logs')">审计日志</a-menu-item>
         <a-menu-item key="/agent-tasks" @click="go('/agent-tasks')">任务状态</a-menu-item>
       </a-menu>
