@@ -1,9 +1,11 @@
 package com.larkconnect.agent.admin;
 
 import com.larkconnect.agent.ai.AiRuntimeConfigService;
+import com.larkconnect.agent.audit.ChainTraceService;
 import com.larkconnect.agent.common.ApiResponse;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -18,10 +20,12 @@ import java.util.Map;
 public class AdminController {
     private final AdminService adminService;
     private final AiRuntimeConfigService aiRuntimeConfigService;
+    private final ChainTraceService chainTraceService;
 
-    public AdminController(AdminService adminService, AiRuntimeConfigService aiRuntimeConfigService) {
+    public AdminController(AdminService adminService, AiRuntimeConfigService aiRuntimeConfigService, ChainTraceService chainTraceService) {
         this.adminService = adminService;
         this.aiRuntimeConfigService = aiRuntimeConfigService;
+        this.chainTraceService = chainTraceService;
     }
 
     @PostMapping("/login")
@@ -90,5 +94,12 @@ public class AdminController {
     @PutMapping("/ai-settings")
     public ApiResponse<AdminDtos.AiSettingsResponse> saveAiSettings(@RequestBody AdminDtos.AiSettingsRequest request) {
         return ApiResponse.ok(aiRuntimeConfigService.saveSettings(request));
+    }
+
+    @GetMapping("/chain-trace/{requestId}")
+    public ApiResponse<Map<String, Object>> getChainTrace(@PathVariable String requestId) {
+        return chainTraceService.load(requestId)
+                .map(ApiResponse::ok)
+                .orElse(ApiResponse.error("链调记录不存在"));
     }
 }
