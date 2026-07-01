@@ -48,5 +48,7 @@ export const adminApi = {
     http.post<unknown, Record<string, unknown>>('/api/admin/debug/feishu/card', payload),
   debugFeishuCardBatch: (payload: Record<string, unknown>) =>
     http.post<unknown, Record<string, unknown>>('/api/admin/debug/feishu/card-batch', payload),
-  debugAgentQuery: (payload: Record<string, unknown>) => http.post('/api/admin/debug/agent/query', payload)
+  debugAgentQuery: (payload: Record<string, unknown>) => http.post('/api/admin/debug/agent/query', payload),
+  getChainTrace: (requestId: string) =>
+    http.get<unknown, Record<string, unknown>>(`/api/admin/chain-trace/${requestId}`)
 }

@@ -5,6 +5,7 @@ import PeopleConfigView from '../views/PeopleConfigView.vue'
 import ChatBindingsView from '../views/ChatBindingsView.vue'
 import AuditLogsView from '../views/AuditLogsView.vue'
 import AgentTasksView from '../views/AgentTasksView.vue'
+import ChainTraceView from '../views/ChainTraceView.vue'
 import FeishuMessagesView from '../views/FeishuMessagesView.vue'
 import TestCenterView from '../views/TestCenterView.vue'
 import SystemSettingsView from '../views/SystemSettingsView.vue'
@@ -25,6 +26,7 @@ const router = createRouter({
         { path: 'system-settings', component: SystemSettingsView },
         { path: 'audit-logs', component: AuditLogsView },
         { path: 'agent-tasks', component: AgentTasksView },
+        { path: 'chain-trace/:requestId', component: ChainTraceView },
         { path: 'feishu-messages', component: FeishuMessagesView },
         { path: 'test-center', component: TestCenterView }
       ]
