@@ -50,3 +50,11 @@ class AgentAnswerResponse(BaseModel):
     toolCalls: list[ToolCall] = Field(default_factory=list)
     answer: str | None = None
     answerMetadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TimeRange(BaseModel):
+    label: str
+    start: str  # format: "YYYY-MM-DD HH:MM:SS"
+    end: str    # format: "YYYY-MM-DD HH:MM:SS"
+    timezone: str = "Asia/Shanghai"
+    source: str  # e.g. "explicit_month", "default_domain", "explicit_days"
