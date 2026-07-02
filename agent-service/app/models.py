@@ -65,3 +65,11 @@ class ProjectMatch(BaseModel):
     confidence: float = 0.0
     needClarification: bool = False
     clarificationQuestion: str | None = None
+
+
+class DomainIntent(BaseModel):
+    domains: list[str] = Field(default_factory=list)  # e.g. ["quality"], ["progress", "risk"]
+    projectHints: list[str] = Field(default_factory=list)  # project hints extracted from question
+    timeRange: TimeRange | None = None  # resolved time range
+    depth: str = "standard"  # "quick", "standard", "deep"
+    confidence: float = 0.0  # 0.0-1.0
