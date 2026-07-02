@@ -27,6 +27,7 @@ import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -248,6 +249,140 @@ class AgentOrchestratorTest {
 
         assertThat(mcpAdapter.calledPaginatedTools).containsExactly("query_form_data_list");
         assertThat(feishuClient.lastAnswer).isEqualTo("查询完成");
+    }
+
+    @Test
+    void shouldIncludePurposeAndPaginationInTrace() {
+        AtomicReference<ChainTrace> capturedTrace = new AtomicReference<>();
+        FakeTaskService taskService = new FakeTaskService(task("Roche施工日报"));
+        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
+        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
+        mcpAdapter.tools = tools("query_form_data_list");
+        FakeFeishuClient feishuClient = new FakeFeishuClient();
+        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
+
+        agentServiceClient.responses.add(answerWithCalls(
+                new AgentServiceDtos.ToolCall("query_form_data_list", Map.of("formId", "daily_report"), List.of("Roche"), "日报查询",
+                        Map.of("mode", "auto", "pageSize", 100), "获取施工日报")));
+        agentServiceClient.responses.add(finalAnswer("查询完成"));
+
+        orchestratorWithTraceCapture(taskService, tokenResolver, mcpAdapter, feishuClient, agentServiceClient, capturedTrace)
+                .process("req-purpose");
+
+        assertThat(capturedTrace.get()).isNotNull();
+        List<ChainTrace.Node> nodes = capturedTrace.get().nodes;
+        // Find MCP call nodes
+        List<ChainTrace.Node> mcpNodes = nodes.stream()
+                .filter(n -> "mcp_call".equals(n.type()))
+                .toList();
+        assertThat(mcpNodes).isNotEmpty();
+        ChainTrace.Node mcpNode = mcpNodes.get(0);
+        assertThat(mcpNode.metadata())
+                .containsEntry("purpose", "获取施工日报")
+                .containsEntry("pagination", Map.of("mode", "auto", "pageSize", 100));
+    }
+
+    @Test
+    void shouldIncludePaginationCountFieldsInTrace() {
+        AtomicReference<ChainTrace> capturedTrace = new AtomicReference<>();
+        FakeTaskService taskService = new FakeTaskService(task("Roche施工日报"));
+        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
+        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
+        mcpAdapter.tools = tools("query_form_data_list");
+        mcpAdapter.paginationResult = new PaginationResult(
+                List.of(
+                        new PageData(0, 100, Status.SUCCEEDED, Map.of(), Map.of("items", List.of(Map.of("id", 1))), null, 10),
+                        new PageData(1, 100, Status.SUCCEEDED, Map.of(), Map.of("items", List.of(Map.of("id", 2))), null, 10)
+                ),
+                150, 2, 2, 0
+        );
+        FakeFeishuClient feishuClient = new FakeFeishuClient();
+        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
+
+        agentServiceClient.responses.add(answerWithCalls(
+                new AgentServiceDtos.ToolCall("query_form_data_list", Map.of("formId", "daily_report"), List.of("Roche"), "日报查询",
+                        Map.of("mode", "auto", "pageSize", 100, "maxItems", 5000), "获取施工日报")));
+        agentServiceClient.responses.add(finalAnswer("查询完成"));
+
+        orchestratorWithTraceCapture(taskService, tokenResolver, mcpAdapter, feishuClient, agentServiceClient, capturedTrace)
+                .process("req-count");
+
+        assertThat(capturedTrace.get()).isNotNull();
+        List<ChainTrace.Node> mcpNodes = capturedTrace.get().nodes.stream()
+                .filter(n -> "mcp_call".equals(n.type()))
+                .toList();
+        assertThat(mcpNodes).isNotEmpty();
+        ChainTrace.Node mcpNode = mcpNodes.get(0);
+        assertThat(mcpNode.metadata())
+                .containsEntry("totalCount", 150)
+                .containsEntry("pageSize", 100)
+                .containsEntry("truncated", false)
+                .containsEntry("dataSourceName", "daily_report");
+    }
+
+    @Test
+    void shouldMarkTruncatedWhenExceedsLimit() {
+        AtomicReference<ChainTrace> capturedTrace = new AtomicReference<>();
+        FakeTaskService taskService = new FakeTaskService(task("Roche施工日报"));
+        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
+        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
+        mcpAdapter.tools = tools("query_form_data_list");
+        // totalCount 8000 > maxItems 5000, so truncated should be true
+        mcpAdapter.paginationResult = new PaginationResult(
+                List.of(new PageData(0, 100, Status.SUCCEEDED, Map.of(), Map.of("items", List.of(Map.of("id", 1))), null, 10)),
+                8000, 80, 1, 0
+        );
+        FakeFeishuClient feishuClient = new FakeFeishuClient();
+        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
+
+        agentServiceClient.responses.add(answerWithCalls(
+                new AgentServiceDtos.ToolCall("query_form_data_list", Map.of("formId", "daily_report"), List.of("Roche"), "日报查询",
+                        Map.of("mode", "auto", "pageSize", 100, "maxItems", 5000), "获取施工日报")));
+        agentServiceClient.responses.add(finalAnswer("查询完成"));
+
+        orchestratorWithTraceCapture(taskService, tokenResolver, mcpAdapter, feishuClient, agentServiceClient, capturedTrace)
+                .process("req-truncated");
+
+        assertThat(capturedTrace.get()).isNotNull();
+        List<ChainTrace.Node> mcpNodes = capturedTrace.get().nodes.stream()
+                .filter(n -> "mcp_call".equals(n.type()))
+                .toList();
+        assertThat(mcpNodes).isNotEmpty();
+        ChainTrace.Node mcpNode = mcpNodes.get(0);
+        assertThat(mcpNode.metadata())
+                .containsEntry("totalCount", 8000)
+                .containsEntry("truncated", true);
+    }
+
+    private AgentOrchestrator orchestratorWithTraceCapture(
+            FakeTaskService taskService,
+            FakeTokenResolver tokenResolver,
+            FakeMcpAdapter mcpAdapter,
+            FakeFeishuClient feishuClient,
+            FakeAgentServiceClient agentServiceClient,
+            AtomicReference<ChainTrace> traceHolder
+    ) {
+        ChainTraceService traceCapture = new ChainTraceService(null, new ObjectMapper()) {
+            @Override
+            public void save(String requestId, ChainTrace trace) {
+                traceHolder.set(trace);
+            }
+        };
+        return new AgentOrchestrator(
+                taskService,
+                new FakeDeepSeekClient(),
+                tokenResolver,
+                new McpToolRegistry(),
+                mcpAdapter,
+                feishuClient,
+                new FakeAuditService(),
+                properties(),
+                new ObjectMapper(),
+                agentServiceClient,
+                new IntentRouter(),
+                router(AiEngineType.LOCAL_AGENT, new FakeFastGptClient("unused")),
+                traceCapture
+        );
     }
 
     private AgentOrchestrator orchestrator(

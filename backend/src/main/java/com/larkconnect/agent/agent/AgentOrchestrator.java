@@ -277,6 +277,22 @@ public class AgentOrchestrator {
                 if (tr.containsKey("error")) {
                     meta.put("error", tr.get("error"));
                 }
+                if (tr.containsKey("_purpose") && tr.get("_purpose") != null) {
+                    meta.put("purpose", tr.get("_purpose"));
+                }
+                if (tr.containsKey("_pagination") && tr.get("_pagination") != null) {
+                    meta.put("pagination", tr.get("_pagination"));
+                }
+                if (tr.containsKey("totalCount")) {
+                    meta.put("totalCount", tr.get("totalCount"));
+                }
+                if (tr.containsKey("pageSize")) {
+                    meta.put("pageSize", tr.get("pageSize"));
+                }
+                if (tr.containsKey("_truncated")) {
+                    meta.put("truncated", tr.get("_truncated"));
+                }
+                meta.put("dataSourceName", extractDataSourceName(tr));
                 trace.addNode(new ChainTrace.Node(nodeId, "mcp_call",
                         tName + " (" + pName + ")",
                         status, tLatency, meta));
@@ -380,7 +396,11 @@ public class AgentOrchestrator {
 
                 for (int i = 0; i < result.pages().size(); i++) {
                     PageData page = result.pages().get(i);
-                    trace.addMcpCallNode(toolName, token.projectId(), token.projectName(), page, i);
+                    Map<String, Object> pageExtra = new LinkedHashMap<>();
+                    pageExtra.put("totalCount", result.totalCount());
+                    pageExtra.put("truncated", result.totalCount() > 5000);
+                    pageExtra.put("dataSourceName", extractDataSourceName(toolCall.arguments()));
+                    trace.addMcpCallNode(toolName, token.projectId(), token.projectName(), page, i, pageExtra);
                     String nodeId = trace.lastNodeId();
                     trace.addEdge(new ChainTrace.Edge(prevNodeId, nodeId));
                     prevNodeId = nodeId;
@@ -499,6 +519,8 @@ public class AgentOrchestrator {
         toolResult.put("projectId", token.projectId());
         toolResult.put("projectName", token.projectName());
         toolResult.put("toolName", toolCall.toolName());
+        toolResult.put("_purpose", toolCall.purpose());
+        toolResult.put("_pagination", toolCall.pagination());
         Map<String, Object> arguments = new LinkedHashMap<>(toolCall.arguments() == null ? Map.of() : toolCall.arguments());
         try {
             arguments.put("project_id", token.projectId());
@@ -537,6 +559,7 @@ public class AgentOrchestrator {
                 toolResult.put("result", paginatedData);
                 toolResult.put("totalCount", paginationResult.totalCount());
                 toolResult.put("pageSize", pageSize);
+                toolResult.put("_truncated", paginationResult.totalCount() > maxItems);
 
                 // Audit each page
                 for (PageData page : paginationResult.pages()) {
@@ -692,5 +715,22 @@ public class AgentOrchestrator {
 
     private String truncateJson(String json, int maxLen) {
         return json != null && json.length() > maxLen ? json.substring(0, maxLen) + "...(truncated)" : json;
+    }
+
+    @SuppressWarnings("unchecked")
+    private String extractDataSourceName(Map<String, Object> map) {
+        // If this is a toolResult map, extract the arguments sub-map first
+        Map<String, Object> args = map;
+        if (map.containsKey("arguments") && map.get("arguments") instanceof Map) {
+            args = (Map<String, Object>) map.get("arguments");
+        }
+        // Try common data source keys from tool arguments
+        Object dsName = args.get("formId");
+        if (dsName == null) dsName = args.get("formName");
+        if (dsName == null) dsName = args.get("tableName");
+        if (dsName == null) dsName = args.get("resourceId");
+        if (dsName == null) dsName = args.get("resourceName");
+        if (dsName == null) dsName = args.get("datasetId");
+        return dsName != null ? String.valueOf(dsName) : "unknown";
     }
 }
