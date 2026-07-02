@@ -58,3 +58,10 @@ class TimeRange(BaseModel):
     end: str    # format: "YYYY-MM-DD HH:MM:SS"
     timezone: str = "Asia/Shanghai"
     source: str  # e.g. "explicit_month", "default_domain", "explicit_days"
+
+
+class ProjectMatch(BaseModel):
+    projectIds: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+    needClarification: bool = False
+    clarificationQuestion: str | None = None
