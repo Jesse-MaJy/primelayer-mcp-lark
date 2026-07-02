@@ -26,6 +26,8 @@ class ToolCall(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     projectIds: list[str] = Field(default_factory=list)
     reason: str | None = None
+    pagination: dict[str, Any] | None = None
+    purpose: str | None = None
 
 
 class AgentAnswerRequest(BaseModel):
