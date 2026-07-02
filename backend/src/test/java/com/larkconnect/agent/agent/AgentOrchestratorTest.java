@@ -7,12 +7,15 @@ import com.larkconnect.agent.ai.AnswerEngineRouter;
 import com.larkconnect.agent.ai.FastGptAnswerEngine;
 import com.larkconnect.agent.ai.FastGptClient;
 import com.larkconnect.agent.audit.AuditService;
+import com.larkconnect.agent.audit.ChainTrace;
 import com.larkconnect.agent.audit.ChainTraceService;
 import com.larkconnect.agent.common.Status;
 import com.larkconnect.agent.config.AppProperties;
 import com.larkconnect.agent.deepseek.DeepSeekClient;
 import com.larkconnect.agent.feishu.FeishuClient;
 import com.larkconnect.agent.mcp.McpAdapter;
+import com.larkconnect.agent.mcp.McpAdapter.PageData;
+import com.larkconnect.agent.mcp.McpAdapter.PaginationResult;
 import com.larkconnect.agent.mcp.McpToolRegistry;
 import com.larkconnect.agent.token.TokenResolver;
 import org.junit.jupiter.api.Test;
@@ -24,6 +27,7 @@ import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -68,7 +72,7 @@ class AgentOrchestratorTest {
         mcpAdapter.results.put("get_report", Map.of("content", "施工正常"));
         FakeFeishuClient feishuClient = new FakeFeishuClient();
         FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
-        agentServiceClient.responses.add(answerWithCalls(new AgentServiceDtos.ToolCall("get_report", Map.of(), List.of("Roche"), "日报")));
+        agentServiceClient.responses.add(answerWithCalls(new AgentServiceDtos.ToolCall("get_report", Map.of(), List.of("Roche"), "日报", null, null)));
         agentServiceClient.responses.add(finalAnswer("本地 agent 已回答"));
         FakeFastGptClient fastGptClient = new FakeFastGptClient(new IllegalStateException("FastGPT timeout"));
         FakeAuditService auditService = new FakeAuditService();
@@ -127,8 +131,8 @@ class AgentOrchestratorTest {
         FakeFeishuClient feishuClient = new FakeFeishuClient();
         FakeDeepSeekClient deepSeekClient = new FakeDeepSeekClient();
         FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
-        agentServiceClient.responses.add(answerWithCalls(new AgentServiceDtos.ToolCall("get_report", Map.of("reportType", "DAILY"), List.of("Roche"), "日报")));
-        agentServiceClient.responses.add(answerWithCalls(new AgentServiceDtos.ToolCall("get_async_task_result", Map.of("taskId", "task-123"), List.of("Roche"), "轮询")));
+        agentServiceClient.responses.add(answerWithCalls(new AgentServiceDtos.ToolCall("get_report", Map.of("reportType", "DAILY"), List.of("Roche"), "日报", null, null)));
+        agentServiceClient.responses.add(answerWithCalls(new AgentServiceDtos.ToolCall("get_async_task_result", Map.of("taskId", "task-123"), List.of("Roche"), "轮询", null, null)));
         agentServiceClient.responses.add(finalAnswer("项目报告已生成"));
 
         orchestrator(taskService, deepSeekClient, tokenResolver, mcpAdapter, feishuClient, agentServiceClient).process("req-1");
@@ -155,6 +159,230 @@ class AgentOrchestratorTest {
         assertThat(feishuClient.lastAnswer).contains("暂时无法访问项目数据");
         assertThat(feishuClient.lastAnswer).doesNotContain("人员配置");
         assertThat(feishuClient.lastAnswer).doesNotContain("MCP Token");
+    }
+
+    @Test
+    void shouldUsePaginationWhenModeIsAuto() {
+        FakeTaskService taskService = new FakeTaskService(task("Roche施工日报"));
+        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
+        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
+        mcpAdapter.tools = tools("query_form_data_list");
+        FakeFeishuClient feishuClient = new FakeFeishuClient();
+        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
+
+        agentServiceClient.responses.add(answerWithCalls(
+                new AgentServiceDtos.ToolCall("query_form_data_list", Map.of("formId", "test"), List.of("Roche"), "test reason",
+                        Map.of("mode", "auto", "pageSize", 100, "maxPages", 50, "maxItems", 5000), "test purpose")));
+        agentServiceClient.responses.add(finalAnswer("查询完成"));
+
+        orchestrator(taskService, new FakeDeepSeekClient(), tokenResolver, mcpAdapter, feishuClient, agentServiceClient).process("req-paginated");
+
+        assertThat(mcpAdapter.calledTools).isEmpty();
+        assertThat(mcpAdapter.calledPaginatedTools).containsExactly("query_form_data_list");
+        assertThat(feishuClient.lastAnswer).isEqualTo("查询完成");
+    }
+
+    @Test
+    void shouldNotUsePaginationWhenPaginationIsNull() {
+        FakeTaskService taskService = new FakeTaskService(task("Roche施工日报"));
+        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
+        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
+        mcpAdapter.tools = tools("query_form_data_list");
+        mcpAdapter.results.put("query_form_data_list", Map.of("content", "数据"));
+        FakeFeishuClient feishuClient = new FakeFeishuClient();
+        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
+
+        agentServiceClient.responses.add(answerWithCalls(
+                new AgentServiceDtos.ToolCall("query_form_data_list", Map.of("formId", "test"), List.of("Roche"), "test reason", null, null)));
+        agentServiceClient.responses.add(finalAnswer("查询完成"));
+
+        orchestrator(taskService, new FakeDeepSeekClient(), tokenResolver, mcpAdapter, feishuClient, agentServiceClient).process("req-single");
+
+        assertThat(mcpAdapter.calledTools).containsExactly("query_form_data_list");
+        assertThat(mcpAdapter.calledPaginatedTools).isEmpty();
+    }
+
+    @Test
+    void shouldReturnPaginatedResultWithMetadata() {
+        FakeTaskService taskService = new FakeTaskService(task("Roche施工日报"));
+        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
+        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
+        mcpAdapter.tools = tools("query_form_data_list");
+        FakeFeishuClient feishuClient = new FakeFeishuClient();
+        FakeDeepSeekClient deepSeekClient = new FakeDeepSeekClient();
+        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
+
+        agentServiceClient.responses.add(answerWithCalls(
+                new AgentServiceDtos.ToolCall("query_form_data_list", Map.of("formId", "test"), List.of("Roche"), "test reason",
+                        Map.of("mode", "auto", "pageSize", 50), "test purpose")));
+        agentServiceClient.responses.add(finalAnswer("查询完成"));
+
+        orchestrator(taskService, deepSeekClient, tokenResolver, mcpAdapter, feishuClient, agentServiceClient).process("req-metadata");
+
+        assertThat(mcpAdapter.calledPaginatedTools).containsExactly("query_form_data_list");
+        assertThat(deepSeekClient.summarizeCalls).isZero();
+        assertThat(feishuClient.lastAnswer).isEqualTo("查询完成");
+    }
+
+    @Test
+    void shouldReturnPartialResultsWhenPageFails() {
+        FakeTaskService taskService = new FakeTaskService(task("Roche施工日报"));
+        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
+        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
+        mcpAdapter.tools = tools("query_form_data_list");
+        mcpAdapter.paginationResult = new PaginationResult(
+                List.of(
+                        new PageData(0, 100, Status.SUCCEEDED, Map.of(), Map.of("items", List.of(Map.of("id", 1))), null, 10),
+                        new PageData(1, 100, Status.FAILED, Map.of(), null, "MCP timeout", 50)
+                ),
+                150, 2, 1, 1
+        );
+        FakeFeishuClient feishuClient = new FakeFeishuClient();
+        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
+
+        agentServiceClient.responses.add(answerWithCalls(
+                new AgentServiceDtos.ToolCall("query_form_data_list", Map.of("formId", "test"), List.of("Roche"), "test reason",
+                        Map.of("mode", "auto", "pageSize", 100), "test purpose")));
+        agentServiceClient.responses.add(finalAnswer("查询完成"));
+
+        orchestrator(taskService, new FakeDeepSeekClient(), tokenResolver, mcpAdapter, feishuClient, agentServiceClient).process("req-partial");
+
+        assertThat(mcpAdapter.calledPaginatedTools).containsExactly("query_form_data_list");
+        assertThat(feishuClient.lastAnswer).isEqualTo("查询完成");
+    }
+
+    @Test
+    void shouldIncludePurposeAndPaginationInTrace() {
+        AtomicReference<ChainTrace> capturedTrace = new AtomicReference<>();
+        FakeTaskService taskService = new FakeTaskService(task("Roche施工日报"));
+        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
+        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
+        mcpAdapter.tools = tools("query_form_data_list");
+        FakeFeishuClient feishuClient = new FakeFeishuClient();
+        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
+
+        agentServiceClient.responses.add(answerWithCalls(
+                new AgentServiceDtos.ToolCall("query_form_data_list", Map.of("formId", "daily_report"), List.of("Roche"), "日报查询",
+                        Map.of("mode", "auto", "pageSize", 100), "获取施工日报")));
+        agentServiceClient.responses.add(finalAnswer("查询完成"));
+
+        orchestratorWithTraceCapture(taskService, tokenResolver, mcpAdapter, feishuClient, agentServiceClient, capturedTrace)
+                .process("req-purpose");
+
+        assertThat(capturedTrace.get()).isNotNull();
+        List<ChainTrace.Node> nodes = capturedTrace.get().nodes;
+        // Find MCP call nodes
+        List<ChainTrace.Node> mcpNodes = nodes.stream()
+                .filter(n -> "mcp_call".equals(n.type()))
+                .toList();
+        assertThat(mcpNodes).isNotEmpty();
+        ChainTrace.Node mcpNode = mcpNodes.get(0);
+        assertThat(mcpNode.metadata())
+                .containsEntry("purpose", "获取施工日报")
+                .containsEntry("pagination", Map.of("mode", "auto", "pageSize", 100));
+    }
+
+    @Test
+    void shouldIncludePaginationCountFieldsInTrace() {
+        AtomicReference<ChainTrace> capturedTrace = new AtomicReference<>();
+        FakeTaskService taskService = new FakeTaskService(task("Roche施工日报"));
+        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
+        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
+        mcpAdapter.tools = tools("query_form_data_list");
+        mcpAdapter.paginationResult = new PaginationResult(
+                List.of(
+                        new PageData(0, 100, Status.SUCCEEDED, Map.of(), Map.of("items", List.of(Map.of("id", 1))), null, 10),
+                        new PageData(1, 100, Status.SUCCEEDED, Map.of(), Map.of("items", List.of(Map.of("id", 2))), null, 10)
+                ),
+                150, 2, 2, 0
+        );
+        FakeFeishuClient feishuClient = new FakeFeishuClient();
+        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
+
+        agentServiceClient.responses.add(answerWithCalls(
+                new AgentServiceDtos.ToolCall("query_form_data_list", Map.of("formId", "daily_report"), List.of("Roche"), "日报查询",
+                        Map.of("mode", "auto", "pageSize", 100, "maxItems", 5000), "获取施工日报")));
+        agentServiceClient.responses.add(finalAnswer("查询完成"));
+
+        orchestratorWithTraceCapture(taskService, tokenResolver, mcpAdapter, feishuClient, agentServiceClient, capturedTrace)
+                .process("req-count");
+
+        assertThat(capturedTrace.get()).isNotNull();
+        List<ChainTrace.Node> mcpNodes = capturedTrace.get().nodes.stream()
+                .filter(n -> "mcp_call".equals(n.type()))
+                .toList();
+        assertThat(mcpNodes).isNotEmpty();
+        ChainTrace.Node mcpNode = mcpNodes.get(0);
+        assertThat(mcpNode.metadata())
+                .containsEntry("totalCount", 150)
+                .containsEntry("pageSize", 100)
+                .containsEntry("truncated", false)
+                .containsEntry("dataSourceName", "daily_report");
+    }
+
+    @Test
+    void shouldMarkTruncatedWhenExceedsLimit() {
+        AtomicReference<ChainTrace> capturedTrace = new AtomicReference<>();
+        FakeTaskService taskService = new FakeTaskService(task("Roche施工日报"));
+        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
+        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
+        mcpAdapter.tools = tools("query_form_data_list");
+        // totalCount 8000 > maxItems 5000, so truncated should be true
+        mcpAdapter.paginationResult = new PaginationResult(
+                List.of(new PageData(0, 100, Status.SUCCEEDED, Map.of(), Map.of("items", List.of(Map.of("id", 1))), null, 10)),
+                8000, 80, 1, 0
+        );
+        FakeFeishuClient feishuClient = new FakeFeishuClient();
+        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
+
+        agentServiceClient.responses.add(answerWithCalls(
+                new AgentServiceDtos.ToolCall("query_form_data_list", Map.of("formId", "daily_report"), List.of("Roche"), "日报查询",
+                        Map.of("mode", "auto", "pageSize", 100, "maxItems", 5000), "获取施工日报")));
+        agentServiceClient.responses.add(finalAnswer("查询完成"));
+
+        orchestratorWithTraceCapture(taskService, tokenResolver, mcpAdapter, feishuClient, agentServiceClient, capturedTrace)
+                .process("req-truncated");
+
+        assertThat(capturedTrace.get()).isNotNull();
+        List<ChainTrace.Node> mcpNodes = capturedTrace.get().nodes.stream()
+                .filter(n -> "mcp_call".equals(n.type()))
+                .toList();
+        assertThat(mcpNodes).isNotEmpty();
+        ChainTrace.Node mcpNode = mcpNodes.get(0);
+        assertThat(mcpNode.metadata())
+                .containsEntry("totalCount", 8000)
+                .containsEntry("truncated", true);
+    }
+
+    private AgentOrchestrator orchestratorWithTraceCapture(
+            FakeTaskService taskService,
+            FakeTokenResolver tokenResolver,
+            FakeMcpAdapter mcpAdapter,
+            FakeFeishuClient feishuClient,
+            FakeAgentServiceClient agentServiceClient,
+            AtomicReference<ChainTrace> traceHolder
+    ) {
+        ChainTraceService traceCapture = new ChainTraceService(null, new ObjectMapper()) {
+            @Override
+            public void save(String requestId, ChainTrace trace) {
+                traceHolder.set(trace);
+            }
+        };
+        return new AgentOrchestrator(
+                taskService,
+                new FakeDeepSeekClient(),
+                tokenResolver,
+                new McpToolRegistry(),
+                mcpAdapter,
+                feishuClient,
+                new FakeAuditService(),
+                properties(),
+                new ObjectMapper(),
+                agentServiceClient,
+                new IntentRouter(),
+                router(AiEngineType.LOCAL_AGENT, new FakeFastGptClient("unused")),
+                traceCapture
+        );
     }
 
     private AgentOrchestrator orchestrator(
@@ -200,7 +428,12 @@ class AgentOrchestratorTest {
                 agentServiceClient,
                 new IntentRouter(),
                 answerEngineRouter,
-                new ChainTraceService(null, new ObjectMapper())
+                new ChainTraceService(null, new ObjectMapper()) {
+                    @Override
+                    public void save(String requestId, ChainTrace trace) {
+                        // no-op in tests
+                    }
+                }
         );
     }
 
@@ -295,6 +528,8 @@ class AgentOrchestratorTest {
         private Map<String, Object> tools = tools();
         private final Map<String, Map<String, Object>> results = new LinkedHashMap<>();
         private final List<String> calledTools = new ArrayList<>();
+        private final List<String> calledPaginatedTools = new ArrayList<>();
+        private PaginationResult paginationResult;
 
         FakeMcpAdapter() {
             super(properties(), RestClient.builder(), new ObjectMapper());
@@ -309,6 +544,23 @@ class AgentOrchestratorTest {
         public Map<String, Object> callTool(String token, String toolName, Map<String, Object> arguments) {
             calledTools.add(toolName);
             return results.getOrDefault(toolName, Map.of());
+        }
+
+        @Override
+        public PaginationResult callToolWithPagination(String token, String toolName, Map<String, Object> arguments) {
+            return callToolWithPagination(token, toolName, arguments, 100);
+        }
+
+        @Override
+        public PaginationResult callToolWithPagination(String token, String toolName, Map<String, Object> arguments, int pageSize) {
+            calledPaginatedTools.add(toolName);
+            if (paginationResult != null) {
+                return paginationResult;
+            }
+            return new PaginationResult(
+                    List.of(new PageData(0, pageSize, Status.SUCCEEDED, Map.of(), Map.of("items", List.of(Map.of("id", 1))), null, 10)),
+                    1, 1, 1, 0
+            );
         }
     }
 
@@ -335,14 +587,21 @@ class AgentOrchestratorTest {
 
     private static class FakeDeepSeekClient extends DeepSeekClient {
         private int summarizeCalls;
+        private List<Map<String, Object>> lastSummarizeInput;
 
         FakeDeepSeekClient() {
             super(properties(), new ObjectMapper(), RestClient.builder(), new McpToolRegistry());
         }
 
         @Override
+        public String answerGeneral(String question) {
+            return "general answer";
+        }
+
+        @Override
         public String summarize(String question, List<Map<String, Object>> toolResults) {
             summarizeCalls++;
+            lastSummarizeInput = toolResults;
             return "fallback";
         }
     }

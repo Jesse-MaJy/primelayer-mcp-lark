@@ -205,15 +205,33 @@ public class AgentOrchestrator {
         AgentServiceDtos.AgentAnswerResponse plan = null;
         String answer = null;
 
+        ChainTrace trace = new ChainTrace(requestId);
+        trace.addAnalyzeNode("start", "AgentService 启动", "avaliableTools: " + availableTools.size(), "context: " + context.tokens().size() + " projects", 0L);
+        String prevNodeId = "start";
+        int totalMcpCalls = 0;
+        List<String> toolNames = new ArrayList<>();
+
         for (int round = 1; round <= MAX_AGENT_SERVICE_ROUNDS; round++) {
             AgentServiceDtos.AgentAnswerRequest planRequest = agentRequest(requestId, question, chatType, openId, context, availableTools, toolResults);
+            long roundStarted = System.currentTimeMillis();
             plan = agentServiceClient.answer(planRequest);
+            long roundLatency = System.currentTimeMillis() - roundStarted;
             auditService.writeModel(requestId, "agent-service", round == 1 ? "plan" : "round_" + round, question, toJson(plan), Status.SUCCEEDED, 0, null);
+
+            String planNodeId = "agent_plan_r" + round;
+            trace.addAnalyzeNode(planNodeId, "AgentService 规划 round " + round,
+                    "question: " + question, toJson(plan), roundLatency);
+            trace.addEdge(new ChainTrace.Edge(prevNodeId, planNodeId));
+            prevNodeId = planNodeId;
 
             if (plan.requiresClarification()) {
                 String clarification = hasText(plan.clarificationQuestion()) ? plan.clarificationQuestion() : "请补充项目名称或查询范围。";
                 feishuClient.replyAnswerCard(messageId, question, clarification, "需要补充信息", "orange");
                 auditService.writeMain(requestId, openId, chatId, context.primelayerUserId(), List.of(), question, plan.skillId(), clarification, System.currentTimeMillis() - started, null);
+                trace.summary.totalMcpCalls = totalMcpCalls;
+                trace.summary.toolsUsed = toolNames;
+                trace.summary.totalLatencyMs = System.currentTimeMillis() - started;
+                chainTraceService.save(requestId, trace);
                 return;
             }
 
@@ -229,17 +247,83 @@ public class AgentOrchestrator {
 
             List<Map<String, Object>> roundResults = executeAgentToolCalls(requestId, context, plan, availableTools);
             toolResults.addAll(roundResults);
+
+            // Record tool calls in chain trace
+            for (AgentServiceDtos.ToolCall tc : requestedCalls) {
+                if (!toolNames.contains(tc.toolName())) {
+                    toolNames.add(tc.toolName());
+                }
+            }
+            for (Map<String, Object> tr : roundResults) {
+                totalMcpCalls++;
+                String status = String.valueOf(tr.getOrDefault("status", "FAILED"));
+                String tName = String.valueOf(tr.getOrDefault("toolName", "unknown"));
+                String pId = String.valueOf(tr.getOrDefault("projectId", "unknown"));
+                String pName = String.valueOf(tr.getOrDefault("projectName", pId));
+                long tLatency = Long.parseLong(String.valueOf(tr.getOrDefault("latencyMs", 0)));
+
+                String nodeId = "tool_" + sanitizeId(tName) + "_" + sanitizeId(pId) + "_" + totalMcpCalls;
+                Map<String, Object> meta = new LinkedHashMap<>();
+                meta.put("toolName", tName);
+                meta.put("projectId", pId);
+                meta.put("projectName", pName);
+                meta.put("status", status);
+                if (tr.containsKey("arguments")) {
+                    meta.put("request", toJson(tr.get("arguments")));
+                }
+                if (tr.containsKey("result")) {
+                    meta.put("response", truncateJson(toJson(tr.get("result")), 10000));
+                }
+                if (tr.containsKey("error")) {
+                    meta.put("error", tr.get("error"));
+                }
+                if (tr.containsKey("_purpose") && tr.get("_purpose") != null) {
+                    meta.put("purpose", tr.get("_purpose"));
+                }
+                if (tr.containsKey("_pagination") && tr.get("_pagination") != null) {
+                    meta.put("pagination", tr.get("_pagination"));
+                }
+                if (tr.containsKey("totalCount")) {
+                    meta.put("totalCount", tr.get("totalCount"));
+                }
+                if (tr.containsKey("pageSize")) {
+                    meta.put("pageSize", tr.get("pageSize"));
+                }
+                if (tr.containsKey("_truncated")) {
+                    meta.put("truncated", tr.get("_truncated"));
+                }
+                meta.put("dataSourceName", extractDataSourceName(tr));
+                trace.addNode(new ChainTrace.Node(nodeId, "mcp_call",
+                        tName + " (" + pName + ")",
+                        status, tLatency, meta));
+                trace.addEdge(new ChainTrace.Edge(prevNodeId, nodeId));
+                prevNodeId = nodeId;
+            }
+
             if (roundResults.isEmpty()) {
                 break;
             }
         }
 
         if (!hasText(answer) && !toolResults.isEmpty()) {
+            long sumStarted = System.currentTimeMillis();
             answer = deepSeekClient.summarize(question, toolResults);
+            long sumLatency = System.currentTimeMillis() - sumStarted;
+            trace.addAnalyzeNode("deepseek_summary", "DeepSeek 汇总",
+                    "toolResults: " + toolResults.size() + " items", answer, sumLatency);
+            trace.addEdge(new ChainTrace.Edge(prevNodeId, "deepseek_summary"));
+            auditService.writeModel(requestId, properties.deepseek().model(), "summarize", "toolResults=" + toolResults.size(), answer, Status.SUCCEEDED, sumLatency, null);
         }
         if (!hasText(answer)) {
             answer = "暂时没有从项目数据中得到可汇总结果。你可以换一种问法，或稍后重试。";
         }
+
+        trace.summary.totalMcpCalls = totalMcpCalls;
+        trace.summary.totalPages = totalMcpCalls;
+        trace.summary.toolsUsed = toolNames;
+        trace.summary.projectsQueried = context.tokens().stream().map(TokenResolver.TokenEntry::projectId).toList();
+        trace.summary.totalLatencyMs = System.currentTimeMillis() - started;
+        chainTraceService.save(requestId, trace);
 
         feishuClient.replyAnswerCard(messageId, question, answer, route.title(), route.cardTemplate());
         auditService.writeMain(
@@ -312,7 +396,11 @@ public class AgentOrchestrator {
 
                 for (int i = 0; i < result.pages().size(); i++) {
                     PageData page = result.pages().get(i);
-                    trace.addMcpCallNode(toolName, token.projectId(), token.projectName(), page, i);
+                    Map<String, Object> pageExtra = new LinkedHashMap<>();
+                    pageExtra.put("totalCount", result.totalCount());
+                    pageExtra.put("truncated", result.totalCount() > 5000);
+                    pageExtra.put("dataSourceName", extractDataSourceName(toolCall.arguments()));
+                    trace.addMcpCallNode(toolName, token.projectId(), token.projectName(), page, i, pageExtra);
                     String nodeId = trace.lastNodeId();
                     trace.addEdge(new ChainTrace.Edge(prevNodeId, nodeId));
                     prevNodeId = nodeId;
@@ -431,16 +519,60 @@ public class AgentOrchestrator {
         toolResult.put("projectId", token.projectId());
         toolResult.put("projectName", token.projectName());
         toolResult.put("toolName", toolCall.toolName());
+        toolResult.put("_purpose", toolCall.purpose());
+        toolResult.put("_pagination", toolCall.pagination());
         Map<String, Object> arguments = new LinkedHashMap<>(toolCall.arguments() == null ? Map.of() : toolCall.arguments());
         try {
             arguments.put("project_id", token.projectId());
             arguments.put("primelayer_user_id", primelayerUserId);
             toolRegistry.validate(toolCall.toolName(), arguments, availableTools);
-            Map<String, Object> result = mcpAdapter.callTool(token.token(), toolCall.toolName(), arguments);
-            toolResult.put("status", Status.SUCCEEDED);
-            toolResult.put("arguments", arguments);
-            toolResult.put("result", result);
-            auditService.writeTool(requestId, token.projectId(), primelayerUserId, toolCall.toolName(), arguments, Status.SUCCEEDED, System.currentTimeMillis() - toolStarted, null);
+
+            Map<String, Object> pagination = toolCall.pagination();
+            if (shouldUsePagination(pagination)) {
+                // Paginated execution
+                int pageSize = getInt(pagination, "pageSize", 100);
+                int maxItems = getInt(pagination, "maxItems", 5000);
+
+                PaginationResult paginationResult = mcpAdapter.callToolWithPagination(token.token(), toolCall.toolName(), arguments, pageSize);
+
+                // Build paginated result with metadata
+                Map<String, Object> paginatedData = new LinkedHashMap<>();
+                paginatedData.put("totalCount", paginationResult.totalCount());
+                paginatedData.put("pageSize", pageSize);
+                paginatedData.put("totalPages", paginationResult.totalPages());
+                paginatedData.put("successPages", paginationResult.successPages());
+                paginatedData.put("failedPages", paginationResult.failedPages());
+                paginatedData.put("truncated", paginationResult.totalCount() > maxItems);
+
+                // Collect data from all successful pages
+                List<Map<String, Object>> pageDataList = new ArrayList<>();
+                for (PageData page : paginationResult.pages()) {
+                    if (Status.SUCCEEDED.equals(page.status()) && page.rawResponse() != null) {
+                        pageDataList.add(page.rawResponse());
+                    }
+                }
+                paginatedData.put("data", pageDataList);
+
+                String overallStatus = paginationResult.failedPages() == 0 ? Status.SUCCEEDED : "PARTIAL";
+                toolResult.put("status", overallStatus);
+                toolResult.put("arguments", arguments);
+                toolResult.put("result", paginatedData);
+                toolResult.put("totalCount", paginationResult.totalCount());
+                toolResult.put("pageSize", pageSize);
+                toolResult.put("_truncated", paginationResult.totalCount() > maxItems);
+
+                // Audit each page
+                for (PageData page : paginationResult.pages()) {
+                    auditService.writeTool(requestId, token.projectId(), primelayerUserId, toolCall.toolName(), arguments, page.status(), page.latencyMs(), page.error());
+                }
+            } else {
+                // Single-shot execution
+                Map<String, Object> result = mcpAdapter.callTool(token.token(), toolCall.toolName(), arguments);
+                toolResult.put("status", Status.SUCCEEDED);
+                toolResult.put("arguments", arguments);
+                toolResult.put("result", result);
+                auditService.writeTool(requestId, token.projectId(), primelayerUserId, toolCall.toolName(), arguments, Status.SUCCEEDED, System.currentTimeMillis() - toolStarted, null);
+            }
         } catch (Exception e) {
             toolResult.put("status", Status.FAILED);
             toolResult.put("arguments", arguments);
@@ -459,6 +591,20 @@ public class AgentOrchestrator {
         return tokens.stream()
                 .filter(token -> ids.contains(token.projectId()))
                 .toList();
+    }
+
+    private boolean shouldUsePagination(Map<String, Object> pagination) {
+        return pagination != null && "auto".equals(pagination.get("mode"));
+    }
+
+    private int getInt(Map<String, Object> map, String key, int defaultValue) {
+        if (map == null) return defaultValue;
+        Object value = map.get(key);
+        if (value instanceof Number n) return n.intValue();
+        if (value instanceof String s) {
+            try { return Integer.parseInt(s); } catch (NumberFormatException ignored) {}
+        }
+        return defaultValue;
     }
 
     @SuppressWarnings("unchecked")
@@ -561,5 +707,30 @@ public class AgentOrchestrator {
         } catch (Exception e) {
             return String.valueOf(value);
         }
+    }
+
+    private String sanitizeId(String s) {
+        return (s != null ? s : "unknown").replaceAll("[^a-zA-Z0-9_]", "_");
+    }
+
+    private String truncateJson(String json, int maxLen) {
+        return json != null && json.length() > maxLen ? json.substring(0, maxLen) + "...(truncated)" : json;
+    }
+
+    @SuppressWarnings("unchecked")
+    private String extractDataSourceName(Map<String, Object> map) {
+        // If this is a toolResult map, extract the arguments sub-map first
+        Map<String, Object> args = map;
+        if (map.containsKey("arguments") && map.get("arguments") instanceof Map) {
+            args = (Map<String, Object>) map.get("arguments");
+        }
+        // Try common data source keys from tool arguments
+        Object dsName = args.get("formId");
+        if (dsName == null) dsName = args.get("formName");
+        if (dsName == null) dsName = args.get("tableName");
+        if (dsName == null) dsName = args.get("resourceId");
+        if (dsName == null) dsName = args.get("resourceName");
+        if (dsName == null) dsName = args.get("datasetId");
+        return dsName != null ? String.valueOf(dsName) : "unknown";
     }
 }

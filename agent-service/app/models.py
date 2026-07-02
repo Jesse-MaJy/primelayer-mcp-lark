@@ -26,6 +26,8 @@ class ToolCall(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     projectIds: list[str] = Field(default_factory=list)
     reason: str | None = None
+    pagination: dict[str, Any] | None = None
+    purpose: str | None = None
 
 
 class AgentAnswerRequest(BaseModel):
@@ -48,3 +50,26 @@ class AgentAnswerResponse(BaseModel):
     toolCalls: list[ToolCall] = Field(default_factory=list)
     answer: str | None = None
     answerMetadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TimeRange(BaseModel):
+    label: str
+    start: str  # format: "YYYY-MM-DD HH:MM:SS"
+    end: str    # format: "YYYY-MM-DD HH:MM:SS"
+    timezone: str = "Asia/Shanghai"
+    source: str  # e.g. "explicit_month", "default_domain", "explicit_days"
+
+
+class ProjectMatch(BaseModel):
+    projectIds: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+    needClarification: bool = False
+    clarificationQuestion: str | None = None
+
+
+class DomainIntent(BaseModel):
+    domains: list[str] = Field(default_factory=list)  # e.g. ["quality"], ["progress", "risk"]
+    projectHints: list[str] = Field(default_factory=list)  # project hints extracted from question
+    timeRange: TimeRange | None = None  # resolved time range
+    depth: str = "standard"  # "quick", "standard", "deep"
+    confidence: float = 0.0  # 0.0-1.0

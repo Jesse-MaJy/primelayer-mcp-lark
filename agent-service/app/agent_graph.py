@@ -14,6 +14,20 @@ from .project_workflow import (
 )
 from .skills import SkillDefinition, classify_skill, tool_allowed_for_skill
 
+# Domain workflow modules (optional enhancements --- wrapped in try/except at call sites)
+from .domain_config import get_domain_config
+from .domain_intent import detect_domain_intent
+from .form_planner import plan_form_discovery
+from .metric_summarizer import (
+    build_management_report,
+    compute_quality_metrics,
+    compute_safety_metrics,
+    compute_progress_metrics,
+    compute_risk_metrics,
+)
+from .project_alias import resolve_project_ids
+from .time_range import resolve_time_range
+
 READ_ONLY_PREFIXES = ("get_", "list_", "query_", "search_", "primelayer.query_")
 
 
@@ -89,6 +103,16 @@ def _select_project_scope(state: AgentState) -> AgentState:
         return state
     state["project_scope"] = "unknown"
     state["project_ids"] = []
+    # Fallback: try ProjectAliasResolver for alias-based matching
+    if projects:
+        try:
+            config = get_domain_config()
+            match = resolve_project_ids(request.question, projects, config)
+            if not match.needClarification and match.confidence > 0.5:
+                state["project_ids"] = match.projectIds
+                state["project_scope"] = "single_project"
+        except Exception:
+            pass  # Alias resolver is an optional enhancement
     return state
 
 
@@ -103,6 +127,26 @@ def _plan_tool_calls(state: AgentState) -> AgentState:
         calls = plan_project_workflow(request, project_ids)
         state["tool_calls"] = calls
         return state
+    # Try domain workflow for non-project-workflow questions
+    if project_ids:
+        try:
+            config = get_domain_config()
+            intent = detect_domain_intent(request.question, config)
+            if "general" not in intent.domains:
+                tr = resolve_time_range(request.question, default_domain=intent.domains[0])
+                intent.timeRange = tr
+                tool_calls = plan_form_discovery(
+                    intent=intent,
+                    project_ids=project_ids,
+                    available_tools=request.availableTools,
+                    config=config,
+                    tool_results=request.toolResults,
+                )
+                if tool_calls:
+                    state["tool_calls"] = tool_calls
+                    return state
+        except Exception:
+            pass  # Domain workflow is an optional enhancement
     if request.toolResults:
         state["tool_calls"] = []
         return state
@@ -162,7 +206,8 @@ def _summarize_answer(state: AgentState) -> AgentState:
             metadata = workflow_metadata(request, "summary")
             skill_id = PROJECT_REPORT_SKILL_ID
         else:
-            answer = _model_summary(request, skill) or _deterministic_summary(request, skill, project_scope)
+            # Try domain workflow summarization first, fall back to existing paths
+            answer = _domain_summary(request) or _model_summary(request, skill) or _deterministic_summary(request, skill, project_scope)
             metadata = _summary_metadata(request, skill)
             skill_id = skill.skillId
         state["response"] = AgentAnswerResponse(
@@ -317,3 +362,101 @@ def _summary_metadata(request: AgentAnswerRequest, skill: SkillDefinition) -> di
         "toolResultCount": len(request.toolResults),
         "failedProjects": [item.get("projectId") for item in failed],
     }
+
+
+# ---------------------------------------------------------------------------
+# Domain workflow helpers
+# ---------------------------------------------------------------------------
+
+
+def _result_is_success(item: dict[str, Any]) -> bool:
+    """Check if a tool result item has a succeeded status."""
+    return str(item.get("status", "")).upper() == "SUCCEEDED"
+
+
+def _extract_domain_data(tool_results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Extract a merged {total, items} dict from query_form_data_list results."""
+    merged_items: list[dict[str, Any]] = []
+    merged_total = 0
+    for item in tool_results:
+        if item.get("toolName") != "query_form_data_list":
+            continue
+        if not _result_is_success(item):
+            continue
+        result_value = item.get("result", {})
+        data = result_value.get("data", result_value) if isinstance(result_value, dict) else {}
+        if isinstance(data, dict):
+            merged_total += int(data.get("total", 0))
+            items = data.get("items", data.get("records", []))
+            if isinstance(items, list):
+                merged_items.extend(items)
+    return {"total": merged_total, "items": merged_items}
+
+
+def _domain_summary(request: AgentAnswerRequest) -> str | None:
+    """Build a domain-specific management report from tool results.
+
+    Returns None if the domain cannot be detected or no domain data is
+    available, so callers can fall back to other summarization paths.
+    """
+    try:
+        config = get_domain_config()
+        intent = detect_domain_intent(request.question, config)
+    except Exception:
+        return None
+
+    if "general" in intent.domains:
+        return None
+
+    # Resolve time range for the detected domain
+    try:
+        tr = resolve_time_range(request.question, default_domain=intent.domains[0])
+        intent.timeRange = tr
+    except Exception:
+        pass  # Time range resolution is best-effort
+
+    # Extract and merge data from query_form_data_list results
+    data = _extract_domain_data(request.toolResults)
+    if not data.get("items"):
+        return None  # No structured data to summarize
+
+    domain = intent.domains[0]
+
+    # Compute domain-specific metrics
+    compute_fn = {
+        "quality": compute_quality_metrics,
+        "safety": compute_safety_metrics,
+        "progress": compute_progress_metrics,
+        "risk": compute_risk_metrics,
+    }.get(domain)
+    if compute_fn is None:
+        return None
+    try:
+        metrics = compute_fn(data)
+    except Exception:
+        return None
+
+    # Build data source descriptions
+    succeeded = [item for item in request.toolResults if _result_is_success(item)]
+    failed = [item for item in request.toolResults if not _result_is_success(item)]
+    data_sources = [
+        str(item.get("formName") or item.get("toolName") or "")
+        for item in succeeded
+        if item.get("formName") or item.get("toolName")
+    ]
+    failed_sources = [
+        str(item.get("formName") or item.get("toolName") or "")
+        for item in failed
+        if item.get("formName") or item.get("toolName")
+    ]
+
+    try:
+        return build_management_report(
+            domain=domain,
+            metrics=metrics,
+            data_sources=data_sources,
+            failed_sources=failed_sources,
+            domain_intent=intent,
+        )
+    except Exception:
+        return None

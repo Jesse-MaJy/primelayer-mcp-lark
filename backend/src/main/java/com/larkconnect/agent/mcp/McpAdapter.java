@@ -2,6 +2,7 @@ package com.larkconnect.agent.mcp;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.larkconnect.agent.common.Status;
 import com.larkconnect.agent.config.AppProperties;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
@@ -169,55 +170,62 @@ public class McpAdapter {
         int successPages = 0;
         int failedPages = 0;
 
-        Map<String, Object> pageArgs = new LinkedHashMap<>(arguments);
-        pageArgs.put("offset", 0);
-        pageArgs.put("limit", pageSize);
-
-        long started = System.currentTimeMillis();
-        Map<String, Object> rawRequest = buildRequestPayload(toolName, pageArgs);
-        try {
-            Map<String, Object> response = callTool(token, toolName, pageArgs);
-            long latency = System.currentTimeMillis() - started;
-            totalCount = extractTotalCount(response);
-            pages.add(new PageData(0, pageSize, "SUCCEEDED", rawRequest, response, null, latency));
-            successPages++;
-        } catch (Exception e) {
-            long latency = System.currentTimeMillis() - started;
-            pages.add(new PageData(0, pageSize, "FAILED", rawRequest, null, readableError(e), latency));
-            failedPages++;
-            return new PaginationResult(pages, 0, 1, successPages, failedPages);
+        boolean usePageStyle = arguments.containsKey("page") || arguments.containsKey("pageSize");
+        boolean useOffsetStyle = arguments.containsKey("offset") || arguments.containsKey("limit");
+        if (!usePageStyle && !useOffsetStyle) {
+            usePageStyle = true;
         }
 
-        if (totalCount <= pageSize) {
-            return new PaginationResult(pages, totalCount, 1, successPages, failedPages);
-        }
+        int page = 0;
+        int maxIterations = MAX_PAGES;
 
-        int totalPages = Math.min((int) Math.ceil((double) totalCount / pageSize), MAX_PAGES);
+        while (page < maxIterations) {
+            Map<String, Object> pageArgs = new LinkedHashMap<>(arguments);
 
-        for (int page = 1; page < totalPages; page++) {
-            int offset = page * pageSize;
-            Map<String, Object> args = new LinkedHashMap<>(arguments);
-            args.put("offset", offset);
-            args.put("limit", pageSize);
+            if (usePageStyle) {
+                pageArgs.put("page", page + 1);
+                pageArgs.put("pageSize", pageSize);
+            } else {
+                pageArgs.put("offset", page * pageSize);
+                pageArgs.put("limit", pageSize);
+            }
 
-            started = System.currentTimeMillis();
-            Map<String, Object> req = buildRequestPayload(toolName, args);
+            long started = System.currentTimeMillis();
+            Map<String, Object> rawRequest = buildRequestPayload(toolName, pageArgs);
             try {
-                Map<String, Object> resp = callTool(token, toolName, args);
+                Map<String, Object> response = callTool(token, toolName, pageArgs);
                 long latency = System.currentTimeMillis() - started;
-                pages.add(new PageData(page, pageSize, "SUCCEEDED", req, resp, null, latency));
+                List<?> items = extractItems(response);
+                if (page == 0) {
+                    totalCount = extractTotalCount(response);
+                }
+                pages.add(new PageData(page, pageSize, Status.SUCCEEDED, rawRequest, response, null, latency));
                 successPages++;
+
+                if (items == null || items.isEmpty()) {
+                    break;
+                }
+                if (items.size() < pageSize) {
+                    break;
+                }
             } catch (Exception e) {
                 long latency = System.currentTimeMillis() - started;
-                pages.add(new PageData(page, pageSize, "FAILED", req, null, readableError(e), latency));
+                pages.add(new PageData(page, pageSize, Status.FAILED, rawRequest, null, readableError(e), latency));
                 failedPages++;
+                if (page == 0) {
+                    return new PaginationResult(pages, 0, 1, successPages, failedPages);
+                }
+                break;
             }
+
+            page++;
         }
 
+        int totalPages = pages.size();
         return new PaginationResult(pages, totalCount, totalPages, successPages, failedPages);
     }
 
-    private int extractTotalCount(Map<String, Object> response) {
+    int extractTotalCount(Map<String, Object> response) {
         Object result = response.get("result");
         @SuppressWarnings("unchecked")
         Map<String, Object> resultMap = result instanceof Map ? (Map<String, Object>) result : response;
@@ -230,15 +238,40 @@ public class McpAdapter {
         if (resultMap.containsKey("count")) {
             return toInt(resultMap.get("count"));
         }
-        Object items = resultMap.get("items");
-        if (items instanceof List<?> list) {
-            return list.size();
+        if (resultMap.containsKey("totalPages")) {
+            int totalPages = toInt(resultMap.get("totalPages"));
+            int pageSize = toInt(resultMap.getOrDefault("pageSize", DEFAULT_PAGE_SIZE));
+            return totalPages * pageSize;
         }
-        Object data = resultMap.get("data");
-        if (data instanceof List<?> list) {
-            return list.size();
+        List<?> items = extractItems(response);
+        if (items != null) {
+            return items.size();
         }
         return 0;
+    }
+
+    List<?> extractItems(Map<String, Object> response) {
+        Object result = response.get("result");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> resultMap = result instanceof Map ? (Map<String, Object>) result : response;
+
+        Object items = resultMap.get("items");
+        if (items instanceof List<?> list) return list;
+
+        Object data = resultMap.get("data");
+        if (data instanceof List<?> list) return list;
+        if (data instanceof Map<?, ?> dataMap) {
+            Object nestedItems = ((Map<String, Object>) dataMap).get("items");
+            if (nestedItems instanceof List<?> list) return list;
+        }
+
+        Object records = resultMap.get("records");
+        if (records instanceof List<?> list) return list;
+
+        Object listVal = resultMap.get("list");
+        if (listVal instanceof List<?> list) return list;
+
+        return null;
     }
 
     private int toInt(Object value) {

@@ -82,6 +82,11 @@ public class ChainTrace {
     }
 
     public void addMcpCallNode(String toolName, String projectId, String projectName, PageData page, int pageIdx) {
+        addMcpCallNode(toolName, projectId, projectName, page, pageIdx, Map.of());
+    }
+
+    public void addMcpCallNode(String toolName, String projectId, String projectName, PageData page, int pageIdx,
+                               Map<String, Object> extraMeta) {
         String nodeId = "tool_" + sanitizeId(toolName) + "_" + sanitizeId(projectId) + "_p" + pageIdx;
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("toolName", toolName);
@@ -91,6 +96,9 @@ public class ChainTrace {
         meta.put("pageSize", page.pageSize());
         meta.put("request", toJsonSafe(page.rawRequest()));
         meta.put("response", toJsonSafe(page.rawResponse()));
+        if (extraMeta != null) {
+            meta.putAll(extraMeta);
+        }
         addNode(new Node(nodeId, "mcp_call",
                 toolName + " (" + (projectName != null ? projectName : projectId) + ", 第" + (page.page() + 1) + "页)",
                 page.status(), page.latencyMs(), meta));
