@@ -172,18 +172,35 @@ def plan_form_data_queries(
         arguments: dict[str, Any] = {
             "formId": form_id,
             "page": 1,
-            "pageSize": 20,
+            "pageSize": config.pagination.defaultPageSize,
         }
         if time_filter:
             arguments["filter"] = time_filter
+
+        # Build pagination intent from config defaults
+        pagination: dict[str, Any] = {
+            "mode": "auto",
+            "pageSize": config.pagination.defaultPageSize,
+            "maxPages": config.pagination.maxPages,
+            "maxItems": config.pagination.maxItems,
+        }
+
+        # Build descriptive purpose: 查询[表单名]在[时间范围]的数据
+        time_label = intent.timeRange.label if intent.timeRange else "指定时间段"
+        purpose = f"查询{form_name}在{time_label}的数据"
+
+        # Build reason with form ranking context
+        group = candidate.get("rankGroup", "form")
+        reason = f"查询表单[{form_name}]在{time_label}的数据，匹配等级: {group}"
 
         tool_calls.append(
             ToolCall(
                 toolName="query_form_data_list",
                 arguments=arguments,
                 projectIds=project_ids,
-                reason=f"查询表单[{form_name}]在目标时间范围内的数据",
-                purpose=f"fetch_{candidate.get('rankGroup', 'form')}_data",
+                reason=reason,
+                purpose=purpose,
+                pagination=pagination,
             )
         )
 
