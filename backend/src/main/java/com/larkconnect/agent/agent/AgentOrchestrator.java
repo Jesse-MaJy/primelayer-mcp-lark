@@ -504,11 +504,52 @@ public class AgentOrchestrator {
             arguments.put("project_id", token.projectId());
             arguments.put("primelayer_user_id", primelayerUserId);
             toolRegistry.validate(toolCall.toolName(), arguments, availableTools);
-            Map<String, Object> result = mcpAdapter.callTool(token.token(), toolCall.toolName(), arguments);
-            toolResult.put("status", Status.SUCCEEDED);
-            toolResult.put("arguments", arguments);
-            toolResult.put("result", result);
-            auditService.writeTool(requestId, token.projectId(), primelayerUserId, toolCall.toolName(), arguments, Status.SUCCEEDED, System.currentTimeMillis() - toolStarted, null);
+
+            Map<String, Object> pagination = toolCall.pagination();
+            if (shouldUsePagination(pagination)) {
+                // Paginated execution
+                int pageSize = getInt(pagination, "pageSize", 100);
+                int maxItems = getInt(pagination, "maxItems", 5000);
+
+                PaginationResult paginationResult = mcpAdapter.callToolWithPagination(token.token(), toolCall.toolName(), arguments, pageSize);
+
+                // Build paginated result with metadata
+                Map<String, Object> paginatedData = new LinkedHashMap<>();
+                paginatedData.put("totalCount", paginationResult.totalCount());
+                paginatedData.put("pageSize", pageSize);
+                paginatedData.put("totalPages", paginationResult.totalPages());
+                paginatedData.put("successPages", paginationResult.successPages());
+                paginatedData.put("failedPages", paginationResult.failedPages());
+                paginatedData.put("truncated", paginationResult.totalCount() > maxItems);
+
+                // Collect data from all successful pages
+                List<Map<String, Object>> pageDataList = new ArrayList<>();
+                for (PageData page : paginationResult.pages()) {
+                    if (Status.SUCCEEDED.equals(page.status()) && page.rawResponse() != null) {
+                        pageDataList.add(page.rawResponse());
+                    }
+                }
+                paginatedData.put("data", pageDataList);
+
+                String overallStatus = paginationResult.failedPages() == 0 ? Status.SUCCEEDED : "PARTIAL";
+                toolResult.put("status", overallStatus);
+                toolResult.put("arguments", arguments);
+                toolResult.put("result", paginatedData);
+                toolResult.put("totalCount", paginationResult.totalCount());
+                toolResult.put("pageSize", pageSize);
+
+                // Audit each page
+                for (PageData page : paginationResult.pages()) {
+                    auditService.writeTool(requestId, token.projectId(), primelayerUserId, toolCall.toolName(), arguments, page.status(), page.latencyMs(), page.error());
+                }
+            } else {
+                // Single-shot execution
+                Map<String, Object> result = mcpAdapter.callTool(token.token(), toolCall.toolName(), arguments);
+                toolResult.put("status", Status.SUCCEEDED);
+                toolResult.put("arguments", arguments);
+                toolResult.put("result", result);
+                auditService.writeTool(requestId, token.projectId(), primelayerUserId, toolCall.toolName(), arguments, Status.SUCCEEDED, System.currentTimeMillis() - toolStarted, null);
+            }
         } catch (Exception e) {
             toolResult.put("status", Status.FAILED);
             toolResult.put("arguments", arguments);
@@ -527,6 +568,20 @@ public class AgentOrchestrator {
         return tokens.stream()
                 .filter(token -> ids.contains(token.projectId()))
                 .toList();
+    }
+
+    private boolean shouldUsePagination(Map<String, Object> pagination) {
+        return pagination != null && "auto".equals(pagination.get("mode"));
+    }
+
+    private int getInt(Map<String, Object> map, String key, int defaultValue) {
+        if (map == null) return defaultValue;
+        Object value = map.get(key);
+        if (value instanceof Number n) return n.intValue();
+        if (value instanceof String s) {
+            try { return Integer.parseInt(s); } catch (NumberFormatException ignored) {}
+        }
+        return defaultValue;
     }
 
     @SuppressWarnings("unchecked")
