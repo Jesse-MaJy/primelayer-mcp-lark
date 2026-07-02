@@ -1,5 +1,8 @@
 package com.larkconnect.agent.agent;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import java.util.List;
 import java.util.Map;
 
@@ -25,8 +28,27 @@ public final class AgentServiceDtos {
             String toolName,
             Map<String, Object> arguments,
             List<String> projectIds,
-            String reason
-    ) {}
+            String reason,
+            Map<String, Object> pagination,
+            String purpose
+    ) {
+        @JsonCreator
+        public static ToolCall create(
+                @JsonProperty("toolName") String toolName,
+                @JsonProperty("arguments") Map<String, Object> arguments,
+                @JsonProperty("projectIds") List<String> projectIds,
+                @JsonProperty("reason") String reason,
+                @JsonProperty("pagination") Map<String, Object> pagination,
+                @JsonProperty("purpose") String purpose) {
+            return new ToolCall(
+                    toolName,
+                    arguments != null ? arguments : Map.of(),
+                    projectIds != null ? projectIds : List.of(),
+                    reason,
+                    pagination,
+                    purpose);
+        }
+    }
 
     public record AgentAnswerResponse(
             Boolean needClarification,

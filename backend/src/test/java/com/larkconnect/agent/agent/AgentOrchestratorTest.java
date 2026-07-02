@@ -69,7 +69,7 @@ class AgentOrchestratorTest {
         mcpAdapter.results.put("get_report", Map.of("content", "施工正常"));
         FakeFeishuClient feishuClient = new FakeFeishuClient();
         FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
-        agentServiceClient.responses.add(answerWithCalls(new AgentServiceDtos.ToolCall("get_report", Map.of(), List.of("Roche"), "日报")));
+        agentServiceClient.responses.add(answerWithCalls(new AgentServiceDtos.ToolCall("get_report", Map.of(), List.of("Roche"), "日报", null, null)));
         agentServiceClient.responses.add(finalAnswer("本地 agent 已回答"));
         FakeFastGptClient fastGptClient = new FakeFastGptClient(new IllegalStateException("FastGPT timeout"));
         FakeAuditService auditService = new FakeAuditService();
@@ -128,8 +128,8 @@ class AgentOrchestratorTest {
         FakeFeishuClient feishuClient = new FakeFeishuClient();
         FakeDeepSeekClient deepSeekClient = new FakeDeepSeekClient();
         FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
-        agentServiceClient.responses.add(answerWithCalls(new AgentServiceDtos.ToolCall("get_report", Map.of("reportType", "DAILY"), List.of("Roche"), "日报")));
-        agentServiceClient.responses.add(answerWithCalls(new AgentServiceDtos.ToolCall("get_async_task_result", Map.of("taskId", "task-123"), List.of("Roche"), "轮询")));
+        agentServiceClient.responses.add(answerWithCalls(new AgentServiceDtos.ToolCall("get_report", Map.of("reportType", "DAILY"), List.of("Roche"), "日报", null, null)));
+        agentServiceClient.responses.add(answerWithCalls(new AgentServiceDtos.ToolCall("get_async_task_result", Map.of("taskId", "task-123"), List.of("Roche"), "轮询", null, null)));
         agentServiceClient.responses.add(finalAnswer("项目报告已生成"));
 
         orchestrator(taskService, deepSeekClient, tokenResolver, mcpAdapter, feishuClient, agentServiceClient).process("req-1");
