@@ -224,6 +224,14 @@ public class AgentOrchestrator {
             trace.addEdge(new ChainTrace.Edge(prevNodeId, planNodeId));
             prevNodeId = planNodeId;
 
+            if (plan.answerMetadata() != null && plan.answerMetadata().get("toolSelection") != null) {
+                String selectionNodeId = "tool_selection_r" + round;
+                trace.addAnalyzeNode(selectionNodeId, "MCP 工具相关度评估 round " + round,
+                        "availableTools: " + availableTools.size(), toJson(plan.answerMetadata().get("toolSelection")), 0L);
+                trace.addEdge(new ChainTrace.Edge(prevNodeId, selectionNodeId));
+                prevNodeId = selectionNodeId;
+            }
+
             if (plan.requiresClarification()) {
                 String clarification = hasText(plan.clarificationQuestion()) ? plan.clarificationQuestion() : "请补充项目名称或查询范围。";
                 feishuClient.replyAnswerCard(messageId, question, clarification, "需要补充信息", "orange");

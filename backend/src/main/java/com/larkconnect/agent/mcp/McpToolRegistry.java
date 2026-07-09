@@ -5,9 +5,33 @@ import org.springframework.stereotype.Component;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Component
 public class McpToolRegistry {
+    private static final Set<String> KNOWN_READ_ONLY_TOOLS = Set.of(
+            "get_base_form_info",
+            "get_account_info",
+            "get_organization_info",
+            "match_form_resource",
+            "list_form_resource",
+            "get_form_definition",
+            "query_form_data_list",
+            "batch_get_form_value_detail",
+            "query_todo_list",
+            "get_process_approval_info",
+            "get_report",
+            "get_async_task_result",
+            "get_folder_tree",
+            "get_picture_folders",
+            "get_file_by_name",
+            "get_file_list",
+            "get_file_detail",
+            "get_file_reference",
+            "get_picture_list",
+            "get_picture_detail"
+    );
+
     private final List<ToolDefinition> tools = List.of(
             new ToolDefinition("primelayer.query_tasks", "查询 Primelayer 任务、逾期、风险和趋势", true, 30000),
             new ToolDefinition("primelayer.query_project_health", "查询项目健康度和主要风险", true, 30000),
@@ -82,6 +106,9 @@ public class McpToolRegistry {
             return false;
         }
         if (isEnabled(toolName)) {
+            return true;
+        }
+        if (KNOWN_READ_ONLY_TOOLS.contains(toolName)) {
             return true;
         }
         return toolName.startsWith("get_")

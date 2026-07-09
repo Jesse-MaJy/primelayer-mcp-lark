@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lark Connect 接口链路流程图</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Noto Sans CJK SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 20px;
+    min-width: 1400px;
+  }
+  h1 {
+    text-align: center;
+    font-size: 24px;
+    color: #38bdf8;
+    margin-bottom: 6px;
+  }
+  .subtitle {
+    text-align: center;
+    font-size: 13px;
+    color: #64748b;
+    margin-bottom: 24px;
+  }
+  .diagram { position: relative; }
+
+  /* ---- 列布局 ---- */
+  .lane-group {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 20px;
+    align-items: stretch;
+  }
+  .lane {
+    flex: 1;
+    min-width: 200px;
+    position: relative;
+  }
+  .lane-title {
+    text-align: center;
+    font-size: 13px;
+    font-weight: 700;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 6px 0;
+    border-bottom: 2px solid #334155;
+    margin-bottom: 14px;
+  }
+
+  /* ---- 节点 ---- */
+  .node {
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    line-height: 1.5;
+    cursor: default;
+    transition: transform 0.15s, box-shadow 0.15s;
+    position: relative;
+    z-index: 1;
+  }
+  .node:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,.4); }
+
+  .node .class-name { font-weight: 700; font-size: 14px; }
+  .node .method { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #94a3b8; display: block; margin-top: 2px; }
+  .node .desc { font-size: 11px; color: #64748b; margin-top: 4px; }
+  .node .api-path { font-family: monospace; font-size: 11px; color: #fbbf24; display: block; }
+
+  .node-feishu   { background: #1e3a5f; border: 1px solid #3b82f6; }
+  .node-queue    { background: #3b2f1e; border: 1px solid #f59e0b; }
+  .node-orch     { background: #1e293b; border: 1px solid #6366f1; }
+  .node-router   { background: #1e293b; border: 1px solid #8b5cf6; }
+  .node-token    { background: #1a2e1e; border: 1px solid #10b981; }
+  .node-mcp      { background: #2e1a1a; border: 1px solid #ef4444; }
+  .node-agent    { background: #2e1a3a; border: 1px solid #a855f7; }
+  .node-deepseek { background: #1a2e3a; border: 1px solid #06b6d4; }
+  .node-feishu2  { background: #1e3a5f; border: 1px solid #3b82f6; }
+  .node-audit    { background: #1a1a2e; border: 1px solid #475569; }
+  .node-web      { background: #1e2e3a; border: 1px solid #0ea5e9; }
+
+  /* 决策菱形 */
+  .decision {
+    text-align: center;
+    padding: 10px 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #fbbf24;
+    background: #2d2006;
+    border: 1px solid #f59e0b;
+    border-radius: 6px;
+    margin-bottom: 12px;
+  }
+
+  /* 分组容器 */
+  .phase-box {
+    border: 1px dashed #334155;
+    border-radius: 10px;
+    padding: 14px;
+    margin-bottom: 16px;
+    position: relative;
+  }
+  .phase-label {
+    position: absolute;
+    top: -10px;
+    left: 14px;
+    background: #0f172a;
+    padding: 0 8px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #38bdf8;
+  }
+
+  /* agent-service 内部展开 */
+  .agent-internal {
+    border: 2px solid #a855f7;
+    border-radius: 10px;
+    padding: 16px;
+    margin: 8px 0;
+    background: rgba(168,85,247,.06);
+  }
+  .agent-internal-title {
+    text-align: center;
+    font-size: 13px;
+    font-weight: 700;
+    color: #c084fc;
+    margin-bottom: 14px;
+  }
+  .agent-steps {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 4px;
+  }
+  .agent-step {
+    flex: 1;
+    text-align: center;
+    padding: 10px 6px;
+    font-size: 12px;
+    border-radius: 8px;
+    background: #2e1a3a;
+    border: 1px solid #a855f7;
+  }
+  .agent-step .step-num { display: block; font-size: 10px; color: #a855f7; font-weight: 700; }
+  .agent-step .step-name { font-weight: 600; }
+  .agent-step .step-detail { font-size: 10px; color: #94a3b8; margin-top: 3px; line-height: 1.4; }
+  .agent-arrow { color: #a855f7; font-size: 18px; flex-shrink: 0; }
+
+  /* 箭头标签 */
+  .arrow-label {
+    display: inline-block;
+    font-size: 10px;
+    font-family: monospace;
+    color: #fbbf24;
+    background: #2d2006;
+    padding: 1px 6px;
+    border-radius: 3px;
+    border: 1px solid #f59e0b;
+    margin: 0 4px;
+  }
+
+  /* 图例 */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: center;
+    margin-bottom: 20px;
+    padding: 12px;
+    background: #1e293b;
+    border-radius: 8px;
+    border: 1px solid #334155;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #94a3b8; }
+  .legend-dot { width: 14px; height: 14px; border-radius: 3px; border: 1px solid; }
+
+  /* 箭头连线 SVG */
+  svg.flow-arrows {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+    z-index: 0;
+  }
+  .connector {
+    width: 100%;
+    overflow: visible;
+  }
+  .connector path {
+    fill: none;
+    stroke-width: 1.8;
+    stroke-dasharray: 4 3;
+    opacity: 0.5;
+  }
+
+  /* 多分支布局 */
+  .branch-row {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    margin-bottom: 16px;
+  }
+  .branch-col { flex: 1; max-width: 380px; }
+  .branch-header {
+    text-align: center;
+    font-size: 13px;
+    font-weight: 700;
+    padding: 6px;
+    border-radius: 6px;
+    margin-bottom: 12px;
+  }
+
+  .condition-tag {
+    display: inline-block;
+    font-size: 11px;
+    font-family: monospace;
+    padding: 2px 8px;
+    border-radius: 4px;
+    margin-bottom: 6px;
+    font-weight: 600;
+  }
+  .cond-if   { background: #1e3a5f; color: #60a5fa; border: 1px solid #3b82f6; }
+  .cond-elif { background: #2d2006; color: #fbbf24; border: 1px solid #f59e0b; }
+  .cond-else { background: #1a2e1e; color: #34d399; border: 1px solid #10b981; }
+  .cond-agent{ background: #2e1a3a; color: #c084fc; border: 1px solid #a855f7; }
+  .cond-fall { background: #3b2f1e; color: #fb923c; border: 1px solid #f97316; }
+
+  /* admin-web 单独区块 */
+  .web-section {
+    border: 2px solid #0ea5e9;
+    border-radius: 12px;
+    padding: 16px;
+    margin-top: 20px;
+    background: rgba(14,165,233,.05);
+  }
+  .web-section-title {
+    text-align: center;
+    font-size: 15px;
+    font-weight: 700;
+    color: #0ea5e9;
+    margin-bottom: 14px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Lark Connect 接口链路流程图</h1>
+<div class="subtitle">飞书消息 → 意图路由 → Token解析 → MCP工具调用 → 答案生成 → 审计记录</div>
+
+<!-- 图例 -->
+<div class="legend">
+  <div class="legend-item"><span class="legend-dot" style="background:#1e3a5f;border-color:#3b82f6"></span>飞书接入层</div>
+  <div class="legend-item"><span class="legend-dot" style="background:#3b2f1e;border-color:#f59e0b"></span>消息队列</div>
+  <div class="legend-item"><span class="legend-dot" style="background:#1e293b;border-color:#6366f1"></span>编排核心</div>
+  <div class="legend-item"><span class="legend-dot" style="background:#1a2e1e;border-color:#10b981"></span>Token/权限</div>
+  <div class="legend-item"><span class="legend-dot" style="background:#2e1a1a;border-color:#ef4444"></span>MCP协议</div>
+  <div class="legend-item"><span class="legend-dot" style="background:#2e1a3a;border-color:#a855f7"></span>Agent Service</div>
+  <div class="legend-item"><span class="legend-dot" style="background:#1a2e3a;border-color:#06b6d4"></span>DeepSeek LLM</div>
+  <div class="legend-item"><span class="legend-dot" style="background:#1a1a2e;border-color:#475569"></span>审计/追踪</div>
+</div>
+
+<!-- ======== 阶段1: 飞书消息接入 ======== -->
+<div class="phase-box">
+  <span class="phase-label">阶段 1 · 飞书消息接入</span>
+  <div class="lane-group">
+    <!-- 左：飞书入口 -->
+    <div class="lane">
+      <div class="lane-title">飞书事件入口（两种接入方式）</div>
+      <div class="node node-feishu">
+        <span class="class-name">FeishuEventController</span>
+        <span class="api-path">POST /api/feishu/events</span>
+        <span class="method">receive(@RequestBody Map)</span>
+        <span class="desc">飞书 Webhook 回调入口：challenge 回显、消息解析、启动关键词欢迎卡、任务投递</span>
+      </div>
+      <div class="node node-feishu">
+        <span class="class-name">FeishuEventController</span>
+        <span class="api-path">POST /api/feishu/card-events</span>
+        <span class="method">receiveCardEvent(@RequestBody Map)</span>
+        <span class="desc">飞书卡片回调：preset_question 发送预设问题、check_mcp_config 检查配置</span>
+      </div>
+      <div class="node node-feishu">
+        <span class="class-name">FeishuWsEchoBot</span>
+        <span class="method">@PostConstruct start() · handleMessage(P2MessageReceiveV1)</span>
+        <span class="desc">飞书 WebSocket 长连接机器人（备选通道），与 HTTP 回调逻辑相同</span>
+      </div>
+    </div>
+    <!-- 中：解析 -->
+    <div class="lane">
+      <div class="lane-title">消息解析</div>
+      <div class="node node-feishu">
+        <span class="class-name">FeishuEventParser</span>
+        <span class="method">parse(Map body) → FeishuIncomingMessage</span>
+        <span class="desc">从飞书事件 JSON 提取 messageId / openId / chatId / chatType / text；群聊需 @机器人</span>
+      </div>
+      <div class="node node-feishu">
+        <span class="class-name">FeishuClient</span>
+        <span class="method">replyWelcomeCard(messageId)</span>
+        <span class="desc">启动关键词触发欢迎卡（非启动关键词才投递任务）</span>
+      </div>
+    </div>
+    <!-- 右：任务投递 -->
+    <div class="lane">
+      <div class="lane-title">任务投递</div>
+      <div class="node node-orch">
+        <span class="class-name">AgentTaskService</span>
+        <span class="method">createAndPublish(FeishuIncomingMessage)</span>
+        <span class="desc">写入 agent_task 表（PENDING）→ 发送 RabbitMQ 消息到 agent.task.query 队列；重复 messageId 忽略</span>
+      </div>
+      <div style="text-align:center; font-size:28px; color:#f59e0b; margin:8px 0;">↓</div>
+      <div class="node node-queue">
+        <span class="class-name">RabbitMQ</span>
+        <span class="api-path">EXCHANGE: agent.events · QUEUE: agent.task.query · DLQ: agent.task.query.dlq</span>
+        <span class="desc">RabbitConfig: 2-8 并发消费者，失败进死信队列</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======== 阶段2: 消费 & 意图路由 ======== -->
+<div class="phase-box">
+  <span class="phase-label">阶段 2 · 任务消费 &amp; 意图路由</span>
+  <div class="lane-group">
+    <div class="lane">
+      <div class="lane-title">RabbitMQ 消费</div>
+      <div class="node node-orch">
+        <span class="class-name">AgentWorker</span>
+        <span class="method">@RabbitListener(queues = "agent.task.query") handle(AgentTaskMessage)</span>
+        <span class="desc">消费消息：markRunning → 调用 AgentOrchestrator.process → markSucceeded / markFailed</span>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="lane-title">核心编排入口</div>
+      <div class="node node-orch">
+        <span class="class-name">AgentOrchestrator</span>
+        <span class="method">process(String requestId)</span>
+        <span class="desc">加载 agent_task → 获取 question/messageId/chatId/openId/chatType → 意图路由 → 分发到各处理分支</span>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="lane-title">意图分类</div>
+      <div class="node node-router">
+        <span class="class-name">IntentRouter</span>
+        <span class="method">route(String question) → IntentRoute</span>
+        <span class="desc">关键词匹配 6 类意图：</span>
+        <span class="desc">① MCP_CONFIG_STATUS（配置状态，requiresMcp=false）</span>
+        <span class="desc">② SYSTEM_CONFIG（系统配置，requiresMcp=false）</span>
+        <span class="desc">③ WEATHER_EXTERNAL（天气外部，requiresMcp=false）</span>
+        <span class="desc">④ REPORT（报告，requiresMcp=true）</span>
+        <span class="desc">⑤ PROJECT_QUERY（项目查询，requiresMcp=true）</span>
+        <span class="desc">⑥ GENERAL_CHAT（兜底闲聊，requiresMcp=false）</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======== 阶段3: 多分支执行 ======== -->
+<div class="phase-box">
+  <span class="phase-label">阶段 3 · 多分支执行链路</span>
+  <div class="decision">IntentRouter 返回 IntentRoute 后，按以下条件分发</div>
+
+  <div class="branch-row">
+
+    <!-- 分支A: FastGPT -->
+    <div class="branch-col">
+      <div class="branch-header" style="background:#1e3a5f;color:#60a5fa;">
+        分支 A · FastGPT 引擎
+      </div>
+      <span class="condition-tag cond-if">if shouldUseFastGpt(route) == true</span>
+      <div class="node node-deepseek">
+        <span class="class-name">AnswerEngineRouter</span>
+        <span class="method">shouldUseFastGpt(route) → answerWithFastGpt(request)</span>
+        <span class="desc">当 AiRuntimeConfigService 配置为 FASTGPT 且意图非 SYSTEM_CONFIG / MCP_CONFIG_STATUS</span>
+      </div>
+      <div style="text-align:center;font-size:20px;color:#6366f1;">↓</div>
+      <div class="node node-deepseek">
+        <span class="class-name">FastGptClient</span>
+        <span class="api-path">POST {fastGptBaseUrl}/v1/chat/completions</span>
+        <span class="method">answer(FastGptRequest, AiSettings) → FastGptResponse</span>
+        <span class="desc">调用外部 FastGPT，支持动态 baseUrl / 超时 / 记忆（chatId=群聊用chatId，单聊用openId）</span>
+      </div>
+      <div style="text-align:center;font-size:20px;color:#6366f1;">↓</div>
+      <div class="node node-feishu2">
+        <span class="class-name">FeishuClient</span>
+        <span class="method">replyAnswerCard(messageId, question, answer, title, template)</span>
+        <span class="desc">回复飞书回答卡片 → 审计记录</span>
+      </div>
+    </div>
+
+    <!-- 分支B: 非MCP -->
+    <div class="branch-col">
+      <div class="branch-header" style="background:#2d2006;color:#fbbf24;">
+        分支 B · 非 MCP 路由
+      </div>
+      <span class="condition-tag cond-elif">elif route.requiresMcp() == false</span>
+      <div class="node node-orch">
+        <span class="class-name">AgentOrchestrator</span>
+        <span class="method">processNonMcpRoute(...)</span>
+        <span class="desc">按意图分类处理：</span>
+        <span class="desc">· SYSTEM_CONFIG → 配置提示文案</span>
+        <span class="desc">· WEATHER_EXTERNAL → DeepSeek 通用回答 + 天气未接入提示</span>
+        <span class="desc">· GENERAL_CHAT → DeepSeek 通用闲聊</span>
+        <span class="desc">· MCP_CONFIG_STATUS → 进入配置检查分支</span>
+      </div>
+      <div style="text-align:center;font-size:20px;color:#6366f1;">↓</div>
+      <div class="node node-deepseek">
+        <span class="class-name">DeepSeekClient</span>
+        <span class="api-path">POST {deepseek.baseUrl}/chat/completions</span>
+        <span class="method">answerGeneral(question) → String</span>
+        <span class="desc">调用 DeepSeek 通用问答（model=deepseek-chat），不查项目数据</span>
+      </div>
+      <div style="text-align:center;font-size:20px;color:#6366f1;">↓</div>
+      <div class="node node-feishu2">
+        <span class="class-name">FeishuClient</span>
+        <span class="method">replyAnswerCard(...)</span>
+        <span class="desc">回复飞书卡片 → 审计记录</span>
+      </div>
+    </div>
+
+    <!-- 分支C: MCP配置检查 -->
+    <div class="branch-col">
+      <div class="branch-header" style="background:#1a2e1e;color:#34d399;">
+        分支 C · MCP 配置状态
+      </div>
+      <span class="condition-tag cond-else">elif category == MCP_CONFIG_STATUS</span>
+      <div class="node node-orch">
+        <span class="class-name">AgentOrchestrator</span>
+        <span class="method">processMcpConfigStatus(...)</span>
+        <span class="desc">检查 MCP 配置并实时验证每个项目 Token</span>
+      </div>
+      <div style="text-align:center;font-size:20px;color:#10b981;">↓</div>
+      <div class="node node-token">
+        <span class="class-name">TokenResolver</span>
+        <span class="method">checkMcpConfig(openId, chatId, chatType, maxProjects)</span>
+        <span class="method">→ resolveCandidates(...)</span>
+        <span class="desc">解析用户绑定的项目 Token 列表</span>
+      </div>
+      <div style="text-align:center;font-size:20px;color:#ef4444;">↓</div>
+      <div class="node node-mcp">
+        <span class="class-name">McpAdapter</span>
+        <span class="method">listTools(token) → MCP tools/list</span>
+        <span class="desc">对每个项目 Token 调用 MCP listTools 验证连通性</span>
+      </div>
+      <div style="text-align:center;font-size:20px;color:#6366f1;">↓</div>
+      <div class="node node-feishu2">
+        <span class="class-name">FeishuClient</span>
+        <span class="method">replyAnswerCard(messageId, question, answer, "MCP 配置状态", template)</span>
+        <span class="desc">回复配置状态卡片 → 审计记录</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======== 阶段4: MCP 查询主链路 ======== -->
+<div class="phase-box">
+  <span class="phase-label">阶段 4 · MCP 查询主链路（requiresMcp=true）</span>
+
+  <!-- 公共前置: Token解析 + 工具发现 -->
+  <div class="lane-group">
+    <div class="lane">
+      <div class="lane-title">步骤 1 · Token 解析</div>
+      <div class="node node-token">
+        <span class="class-name">TokenResolver</span>
+        <span class="method">resolveCandidates(openId, chatId, chatType, maxProjects)</span>
+        <span class="desc">按 owner（群优先 CHAT_ID → OPEN_ID → 旧版 PRIMELAYER_USER）查找绑定的 MCP Token；Token 加密存储，用 TokenCryptoService.decrypt 解密</span>
+        <span class="desc">项目匹配：精确 projectId → 项目名包含 → 拼音首字母（如 "lz" 匹配 "罗诊"）</span>
+      </div>
+      <div class="node node-token" style="font-size:11px;">
+        <span class="class-name" style="font-size:12px;">TokenCryptoService</span>
+        <span class="method">decrypt(token) — AES-GCM-256 解密</span>
+        <span class="desc">主密钥存储在 system_config 表</span>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="lane-title">步骤 2 · 工具发现 &amp; 安全过滤</div>
+      <div class="node node-mcp">
+        <span class="class-name">McpAdapter</span>
+        <span class="api-path">MCP JSON-RPC: POST {mcp.endpoint}</span>
+        <span class="method">listTools(token) → Map</span>
+        <span class="desc">MCP 协议：initialize 握手 → notifications/initialized → tools/list；支持 SSE 响应解析</span>
+      </div>
+      <div style="text-align:center;font-size:20px;color:#ef4444;">↓</div>
+      <div class="node node-mcp">
+        <span class="class-name">McpToolRegistry</span>
+        <span class="method">filterDiscoveredTools(discoveredTools) → 白名单只读工具</span>
+        <span class="desc">只允许 get_/list_/query_/search_ 前缀；3 个内置兜底工具（primelayer.query_tasks 等）；拒绝 create_/update_/delete_ 变更工具</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 两条 MCP 查询路径 -->
+  <div class="decision">是否启用 agent-service？(app.agent-service.enabled)</div>
+
+  <div class="branch-row">
+
+    <!-- 路径1: agent-service -->
+    <div class="branch-col">
+      <div class="branch-header" style="background:#2e1a3a;color:#c084fc;">
+        路径 1 · Agent Service 编排（主路径）
+      </div>
+      <span class="condition-tag cond-agent">if agentServiceClient.isEnabled() == true</span>
+      <div class="node node-agent">
+        <span class="class-name">AgentServiceClient</span>
+        <span class="api-path">POST {agentService.baseUrl}/v1/agent/answer</span>
+        <span class="method">answer(AgentAnswerRequest) → AgentAnswerResponse</span>
+        <span class="desc">多轮编排（最多 4 轮），每轮将上一轮 toolResults 回传给 agent-service</span>
+      </div>
+
+      <div style="text-align:center;font-size:20px;color:#a855f7;">↓</div>
+      <div class="node node-feishu2">
+        <span class="class-name">AgentOrchestrator</span>
+        <span class="method">executeAgentToolCalls(...) → callAgentToolSafely(...)</span>
+        <span class="desc">Java 后端执行 agent-service 返回的 ToolCall，调 MCP（含分页最多 50 页），结果回传</span>
+      </div>
+      <div class="node node-mcp" style="font-size:12px;">
+        <span class="class-name" style="font-size:13px;">McpAdapter</span>
+        <span class="method">callToolWithPagination(token, toolName, args, pageSize)</span>
+        <span class="desc">支持 page/pageSize 与 offset/limit 两种分页风格</span>
+      </div>
+
+      <!-- agent-service 内部展开 -->
+      <div style="text-align:center;font-size:20px;color:#a855f7;margin:8px 0;">↓</div>
+      <div class="agent-internal">
+        <div class="agent-internal-title">agent-service 内部 · LangGraph 五节点工作流</div>
+        <div class="agent-steps">
+          <div class="agent-step">
+            <span class="step-num">① CLASSIFY</span>
+            <span class="step-name">classify_skill</span>
+            <span class="step-detail">关键词匹配路由到 5 个技能<br>project_report / project_status_qa / task_risk_qa / weekly_report / general_mcp_qa</span>
+          </div>
+          <span class="agent-arrow">→</span>
+          <div class="agent-step">
+            <span class="step-num">② SCOPE</span>
+            <span class="step-name">select_project_scope</span>
+            <span class="step-detail">群聊→当前项目<br>含"全部"→全部项目<br>别名解析兜底（置信度 0.75-0.95）</span>
+          </div>
+          <span class="agent-arrow">→</span>
+          <div class="agent-step">
+            <span class="step-num">③ PLAN</span>
+            <span class="step-name">plan_tool_calls</span>
+            <span class="step-detail">项目工作流(多轮)→<br>领域工作流(表单发现)→<br>单工具兜底</span>
+          </div>
+          <span class="agent-arrow">→</span>
+          <div class="agent-step">
+            <span class="step-num">④ SUMMARIZE</span>
+            <span class="step-name">summarize_answer</span>
+            <span class="step-detail">领域管理报告→<br>DeepSeek 模型汇总→<br>确定性兜底汇总</span>
+          </div>
+          <span class="agent-arrow">→</span>
+          <div class="agent-step">
+            <span class="step-num">⑤ CHECK</span>
+            <span class="step-name">quality_check</span>
+            <span class="step-detail">强制追加<br>"数据范围：基于本次 MCP 工具返回结果"<br>防止幻觉</span>
+          </div>
+        </div>
+        <div style="margin-top:12px; font-size:11px; color:#94a3b8; text-align:center;">
+          agent-service 返回 <span class="arrow-label">toolCalls</span> 时 → Java 执行 MCP 调用 → 结果回传 → agent-service 下一轮 → 返回 <span class="arrow-label">answer</span> 时结束
+        </div>
+      </div>
+
+      <div style="text-align:center;font-size:20px;color:#6366f1;margin:8px 0;">↓</div>
+      <div class="node node-feishu2">
+        <span class="class-name">FeishuClient</span>
+        <span class="method">replyAnswerCard(messageId, question, answer, route.title(), route.cardTemplate())</span>
+        <span class="desc">回复飞书回答卡片</span>
+      </div>
+    </div>
+
+    <!-- 路径2: DeepSeek Plan -->
+    <div class="branch-col">
+      <div class="branch-header" style="background:#3b2f1e;color:#fb923c;">
+        路径 2 · DeepSeek 多工具规划（降级路径）
+      </div>
+      <span class="condition-tag cond-fall">fallback（agent-service 未启用或调用失败）</span>
+      <div class="node node-deepseek">
+        <span class="class-name">DeepSeekClient</span>
+        <span class="api-path">POST {deepseek.baseUrl}/chat/completions</span>
+        <span class="method">planMultiTool(question, availableTools) → DeepSeekPlan</span>
+        <span class="desc">LLM 规划 0-5 个工具调用（API key 未配置时走 heuristicPlan 启发式兜底）</span>
+      </div>
+      <div style="text-align:center;font-size:20px;color:#06b6d4;">↓</div>
+      <div class="node node-mcp">
+        <span class="class-name">McpAdapter</span>
+        <span class="method">callToolWithPagination(token, toolName, args, pageSize)</span>
+        <span class="desc">对每个工具 × 每个项目 Token 执行分页调用（最多 50 页/工具）</span>
+      </div>
+      <div style="text-align:center;font-size:20px;color:#06b6d4;">↓</div>
+      <div class="node node-deepseek">
+        <span class="class-name">DeepSeekClient</span>
+        <span class="method">analyzePerTool(toolName, allPageResults) → PerToolAnalysis</span>
+        <span class="desc">阶段 1：逐工具全量数据分析</span>
+      </div>
+      <div style="text-align:center;font-size:20px;color:#06b6d4;">↓</div>
+      <div class="node node-deepseek">
+        <span class="class-name">DeepSeekClient</span>
+        <span class="method">analyzeCross(question, perToolAnalyses) → String</span>
+        <span class="desc">阶段 2：跨工具交叉综合分析，生成最终答案</span>
+      </div>
+      <div style="text-align:center;font-size:20px;color:#6366f1;margin:8px 0;">↓</div>
+      <div class="node node-feishu2">
+        <span class="class-name">FeishuClient</span>
+        <span class="method">replyAnswerCard(messageId, question, finalAnswer, ...)</span>
+        <span class="desc">回复飞书回答卡片</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ======== 阶段5: 审计与追踪 ======== -->
+<div class="phase-box">
+  <span class="phase-label">阶段 5 · 审计日志 &amp; 链路追踪（所有分支结束时并行写入）</span>
+  <div class="lane-group">
+    <div class="lane">
+      <div class="lane-title">主审计日志</div>
+      <div class="node node-audit">
+        <span class="class-name">AuditService</span>
+        <span class="method">writeMain(requestId, openId, chatId, primelayerUserId, projectIds, question, intent, answer, latencyMs, error)</span>
+        <span class="desc">写入 agent_audit_log 表（upsert），记录主审计信息</span>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="lane-title">工具调用日志</div>
+      <div class="node node-audit">
+        <span class="class-name">AuditService</span>
+        <span class="method">writeTool(requestId, projectId, primelayerUserId, toolName, arguments, status, latencyMs, error)</span>
+        <span class="desc">写入 agent_tool_call_log 表，每次 MCP 工具调用记录一条</span>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="lane-title">模型调用日志</div>
+      <div class="node node-audit">
+        <span class="class-name">AuditService</span>
+        <span class="method">writeModel(requestId, model, purpose, inputSummary, outputText, status, latencyMs, error)</span>
+        <span class="desc">写入 agent_model_call_log 表，记录 DeepSeek / FastGPT / agent-service 调用</span>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="lane-title">链路追踪</div>
+      <div class="node node-audit">
+        <span class="class-name">ChainTraceService</span>
+        <span class="method">save(requestId, ChainTrace)</span>
+        <span class="desc">ChainTrace 记录完整节点图（plan → mcp_call → analyze）和边，序列化为 JSON 存入 agent_chain_trace 表</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======== admin-web 管理后台 ======== -->
+<div class="web-section">
+  <div class="web-section-title">管理后台 admin-web · 独立调用链路</div>
+  <div class="lane-group">
+    <div class="lane">
+      <div class="lane-title">前端路由</div>
+      <div class="node node-web">
+        <span class="class-name">router/index.ts</span>
+        <span class="desc">/login → LoginView</span>
+        <span class="desc">/people-configs → PeopleConfigView</span>
+        <span class="desc">/chat-bindings → ChatBindingsView</span>
+        <span class="desc">/system-settings → SystemSettingsView</span>
+        <span class="desc">/audit-logs → AuditLogsView</span>
+        <span class="desc">/agent-tasks → AgentTasksView</span>
+        <span class="desc">/chain-trace/:id → ChainTraceView</span>
+        <span class="desc">/feishu-messages → FeishuMessagesView</span>
+        <span class="desc">/test-center → TestCenterView</span>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="lane-title">鉴权</div>
+      <div class="node node-web">
+        <span class="class-name">stores/auth.ts</span>
+        <span class="method">login(username, password) · logout()</span>
+        <span class="desc">Pinia store，token 存 localStorage</span>
+      </div>
+      <div class="node node-web" style="font-size:12px;">
+        <span class="class-name" style="font-size:12px;">api/http.ts</span>
+        <span class="method">axios 请求拦截器注入 Bearer Token</span>
+        <span class="desc">响应拦截器检查 success 字段</span>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="lane-title">API 调用</div>
+      <div class="node node-web">
+        <span class="class-name">api/admin.ts</span>
+        <span class="method">28 个 API 方法</span>
+        <span class="desc">管理 API：</span>
+        <span class="desc">· login / user-bindings / project-tokens / chat-bindings</span>
+        <span class="desc">· audit-logs / agent-tasks / feishu-messages</span>
+        <span class="desc">· ai-settings（GET/PUT）</span>
+        <span class="desc">· chain-trace/{requestId}</span>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="lane-title">调试 API</div>
+      <div class="node node-web">
+        <span class="class-name">api/admin.ts → DebugController</span>
+        <span class="api-path">/api/admin/debug/*</span>
+        <span class="desc">· /health — 健康检查</span>
+        <span class="desc">· /deepseek/plan · /deepseek/connection · /deepseek/summarize</span>
+        <span class="desc">· /fastgpt/connection</span>
+        <span class="desc">· /mcp/call · /mcp/tools · /mcp/question</span>
+        <span class="desc">· /feishu/mock-event · /feishu/token</span>
+        <span class="desc">· /feishu/card · /feishu/card-batch</span>
+        <span class="desc">· /agent/query — 端到端 Agent 测试</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 后台关键交互链路 -->
+  <div style="margin-top:14px; padding:12px; background:#1e293b; border-radius:8px; border:1px solid #334155;">
+    <div style="font-size:13px; font-weight:700; color:#38bdf8; margin-bottom:10px;">后台关键交互链路</div>
+    <div style="font-size:12px; color:#94a3b8; line-height:2.2;">
+      <strong style="color:#e2e8f0;">人员配置向导</strong>：PeopleConfigView → <span class="arrow-label">adminApi.saveUserBinding</span> → AdminController → AdminService → AdminRepository<br>
+      <strong style="color:#e2e8f0;">Token 验证</strong>：PeopleConfigView → <span class="arrow-label">adminApi.verifyProjectToken</span> → AdminController → AdminService.verifyToken → McpAdapter.listTools（探活）<br>
+      <strong style="color:#e2e8f0;">Token 保存</strong>：PeopleConfigView → <span class="arrow-label">adminApi.saveProjectToken</span> → AdminController → AdminService → TokenCryptoService.encrypt → AdminRepository.upsertProjectToken<br>
+      <strong style="color:#e2e8f0;">AI 引擎切换</strong>：SystemSettingsView → <span class="arrow-label">adminApi.saveAiSettings</span> → AdminController → AiRuntimeConfigService.saveSettings → system_config 表<br>
+      <strong style="color:#e2e8f0;">链路查看</strong>：AgentTasksView → <span class="arrow-label">viewTrace(requestId)</span> → ChainTraceView → <span class="arrow-label">adminApi.getChainTrace</span> → AdminController → ChainTraceService.load → Mermaid 流程图渲染<br>
+      <strong style="color:#e2e8f0;">端到端测试</strong>：TestCenterView → <span class="arrow-label">adminApi.debugAgentQuery</span> → DebugController → DebugService.queryAgent → AgentServiceClient / DeepSeekClient<br>
+      <strong style="color:#e2e8f0;">MCP 工具测试</strong>：TestCenterView → <span class="arrow-label">adminApi.debugMcpTools</span> → DebugController → DebugService.listMcpTools → McpAdapter.listTools
+    </div>
+  </div>
+</div>
+
+<!-- ======== 关键约束 ======== -->
+<div style="margin-top:20px; padding:16px; background:#1a2e1e; border-radius:10px; border:1px solid #10b981;">
+  <div style="font-size:14px; font-weight:700; color:#34d399; margin-bottom:10px;">关键安全约束</div>
+  <div style="font-size:12px; color:#94a3b8; line-height:2;">
+    <strong style="color:#e2e8f0;">MCP Token 不外泄</strong>：agent-service 只接收脱敏上下文和工具 schema，Token 加解密和 MCP 实际调用仅在 Java 后端执行<br>
+    <strong style="color:#e2e8f0;">只读白名单</strong>：McpToolRegistry 只允许 get_/list_/query_/search_ 前缀工具，拒绝 create_/update_/delete_ 变更操作<br>
+    <strong style="color:#e2e8f0;">数据范围声明</strong>：agent-service 的 quality_check 节点强制在答案末尾追加"数据范围：基于本次 MCP 工具返回结果"，防止幻觉<br>
+    <strong style="color:#e2e8f0;">多轮上限</strong>：Agent Service 多轮编排最多 4 轮，超过则用 DeepSeek summarize 兜底<br>
+    <strong style="color:#e2e8f0;">分页上限</strong>：MCP 分页调用最多 50 页，单次最多 5000 条数据<br>
+    <strong style="color:#e2e8f0;">优雅降级</strong>：LangGraph 不可用时降级为函数链；agent-service 不可用时降级为 DeepSeek 多工具规划；DeepSeek API key 未配置时走启发式兜底
+  </div>
+</div>
+
+<div style="text-align:center; margin-top:24px; font-size:11px; color:#475569;">
+  Lark Connect Agent Gateway · DeepSeek + Primelayer MCP + 飞书 · 2026-07-02
+</div>
+
+</body>
+</html>

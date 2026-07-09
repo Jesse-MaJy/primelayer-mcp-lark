@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from .models import AgentAnswerRequest, ToolCall, ToolDefinition
+from .time_range import resolve_time_range
 from .tool_catalog import has_tool
 
 PROJECT_REPORT_SKILL_ID = "project_report"
@@ -143,6 +144,7 @@ def _form_data_calls(request: AgentAnswerRequest, project_ids: list[str]) -> lis
         if item.get("toolName") == "query_form_data_list"
     }
     start, end = _time_range(request.question)
+    page_size = 100
     calls: list[ToolCall] = []
     for item in request.toolResults:
         if item.get("toolName") not in ("match_form_resource", "list_form_resource") or not _is_success(item):
@@ -157,11 +159,13 @@ def _form_data_calls(request: AgentAnswerRequest, project_ids: list[str]) -> lis
                     arguments={
                         "formId": form_id,
                         "page": 1,
-                        "pageSize": 20,
+                        "pageSize": page_size,
                         "filter": {"createTime": [start, end]},
                     },
                     projectIds=_item_project_ids(item, project_ids),
                     reason="查询匹配表单在目标时间范围内的数据",
+                    pagination={"mode": "auto", "pageSize": page_size, "maxPages": 50, "maxItems": 5000},
+                    purpose=f"查询{form.get('formName') or form.get('formTitle') or form.get('title') or form_id}在目标时间范围内的数据",
                 )
             )
     return calls
@@ -220,6 +224,11 @@ def _report_type(question: str) -> str:
 
 
 def _time_range(question: str) -> tuple[str, str]:
+    try:
+        resolved = resolve_time_range(question)
+        return resolved.start, resolved.end
+    except Exception:
+        pass
     today = date.today()
     text = question or ""
     if "本周" in text or "周报" in text:
@@ -241,7 +250,7 @@ def _extract_forms(value: Any) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         has_form_id = any(key in item for key in ("formId", "form_id", "id"))
-        has_form_name = any(key in item for key in ("formTitle", "title", "name"))
+        has_form_name = any(key in item for key in ("formName", "formTitle", "title", "name"))
         if has_form_id and has_form_name:
             forms.append(item)
     return forms
@@ -271,6 +280,13 @@ def _walk(value: Any) -> list[Any]:
     elif isinstance(value, list):
         for child in value:
             items.extend(_walk(child))
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            try:
+                items.extend(_walk(json.loads(stripped)))
+            except Exception:
+                pass
     return items
 
 

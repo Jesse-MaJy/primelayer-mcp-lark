@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AgentOrchestratorTest {
     @Test
     void usesFastGptForNormalQuestionsWhenSelectedAndSkipsLocalMcpFlow() {
-        FakeTaskService taskService = new FakeTaskService(task("Roche今日施工情况"));
+        FakeTaskService taskService = new FakeTaskService(task("你好，介绍一下你自己"));
         FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
         FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
         FakeFeishuClient feishuClient = new FakeFeishuClient();
@@ -54,7 +54,7 @@ class AgentOrchestratorTest {
         ).process("req-fastgpt");
 
         assertThat(fastGptClient.requests).hasSize(1);
-        assertThat(fastGptClient.requests.get(0).question()).isEqualTo("Roche今日施工情况");
+        assertThat(fastGptClient.requests.get(0).question()).isEqualTo("你好，介绍一下你自己");
         assertThat(fastGptClient.requests.get(0).chatId()).isEqualTo("open-1");
         assertThat(mcpAdapter.calledTools).isEmpty();
         assertThat(agentServiceClient.requests).isZero();
@@ -64,7 +64,39 @@ class AgentOrchestratorTest {
     }
 
     @Test
-    void fallsBackToLocalAgentWhenFastGptFails() {
+    void usesLocalAgentForMcpProjectQuestionsEvenWhenFastGptIsSelected() {
+        FakeTaskService taskService = new FakeTaskService(task("roche上个月质量问题"));
+        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
+        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
+        mcpAdapter.tools = tools("match_form_resource");
+        mcpAdapter.results.put("match_form_resource", Map.of("forms", List.of(Map.of("formName", "质量缺陷清单"))));
+        FakeFeishuClient feishuClient = new FakeFeishuClient();
+        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
+        agentServiceClient.responses.add(answerWithCalls(
+                new AgentServiceDtos.ToolCall("match_form_resource", Map.of("name", "质量缺陷清单"), List.of("Roche"), "匹配质量表单", null, "discover_quality_core_forms")));
+        agentServiceClient.responses.add(finalAnswer("质量问题查询完成"));
+        FakeFastGptClient fastGptClient = new FakeFastGptClient("FastGPT should not answer");
+
+        orchestrator(
+                taskService,
+                new FakeDeepSeekClient(),
+                tokenResolver,
+                mcpAdapter,
+                feishuClient,
+                agentServiceClient,
+                router(AiEngineType.FASTGPT, fastGptClient),
+                new FakeAuditService()
+        ).process("req-mcp-fastgpt");
+
+        assertThat(fastGptClient.requests).isEmpty();
+        assertThat(agentServiceClient.requests).isEqualTo(2);
+        assertThat(mcpAdapter.calledTools).containsExactly("match_form_resource");
+        assertThat(feishuClient.lastAnswer).isEqualTo("质量问题查询完成");
+        assertThat(feishuClient.lastTitle).isEqualTo("项目查询");
+    }
+
+    @Test
+    void skipsFastGptForMcpProjectQuestionsEvenWhenFastGptWouldFail() {
         FakeTaskService taskService = new FakeTaskService(task("Roche今日施工情况"));
         FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
         FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
@@ -88,10 +120,10 @@ class AgentOrchestratorTest {
                 auditService
         ).process("req-fallback");
 
-        assertThat(fastGptClient.requests).hasSize(1);
+        assertThat(fastGptClient.requests).isEmpty();
         assertThat(mcpAdapter.calledTools).containsExactly("get_report");
         assertThat(feishuClient.lastAnswer).isEqualTo("本地 agent 已回答");
-        assertThat(auditService.modelPurposes).contains("fastgpt_fallback");
+        assertThat(auditService.modelPurposes).doesNotContain("fastgpt_fallback");
     }
 
     @Test

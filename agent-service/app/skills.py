@@ -20,7 +20,7 @@ SKILLS: tuple[SkillDefinition, ...] = (
         skillId="project_report",
         name="项目报告与施工情况",
         description="回答项目背景、施工日报、周报、质量、安全、隐患、检查和进度情况。",
-        triggerExamples=("今日施工", "今天施工", "施工情况", "施工日报", "质量安全", "安全隐患", "项目情况"),
+        triggerExamples=("今日施工", "今天施工", "施工情况", "施工日报", "质量安全", "安全隐患", "项目情况","质量", "安全", "隐患", "检查",),
         allowedTools=(
             "get_base_form_info",
             "match_form_resource",
@@ -112,7 +112,7 @@ def classify_skill(question: str) -> SkillDefinition:
             score += 1
         if skill.skillId == "weekly_report" and any(word in text for word in ("weekly", "daily", "report", "summary")):
             score += 1
-        if skill.skillId == "project_report" and any(word in text for word in ("construction", "site", "quality", "safety")):
+        if skill.skillId == "project_report" and any(word in text for word in ("construction", "site", "quality", "safety", "质量", "安全", "施工", "现场")):
             score += 1
         score_by_skill[skill] = score
     best = max(score_by_skill.items(), key=lambda item: item[1])

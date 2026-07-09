@@ -54,6 +54,25 @@ def test_compute_quality_metrics_status_distribution():
     assert "已完成" in dist
 
 
+def test_compute_quality_metrics_does_not_treat_unknown_status_as_unclosed():
+    """状态字段缺失时不能把 total 全部算成未整改。"""
+    metrics = compute_quality_metrics({
+        "total": 4,
+        "items": [
+            {"dataId": "d1", "status": "待整改", "severity": "高"},
+            {"dataId": "d2", "status": "已完成", "severity": "低"},
+            {"dataId": "d3"},
+            {"dataId": "d4"},
+        ],
+    })
+
+    assert metrics["total_records"] == 4
+    assert metrics["known_status_count"] == 2
+    assert metrics["unknown_status_count"] == 2
+    assert metrics["unclosed_count"] == 1
+    assert metrics["completed_count"] == 1
+
+
 def test_compute_quality_metrics_type_distribution():
     """质量域问题类型分布"""
     metrics = compute_quality_metrics(_mock_quality_data())

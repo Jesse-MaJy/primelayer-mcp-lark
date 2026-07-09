@@ -24,7 +24,8 @@ public class AnswerEngineRouter {
     }
 
     private boolean canFastGptHandle(IntentRoute route) {
-        return route.category() != IntentCategory.MCP_CONFIG_STATUS
+        return !route.requiresMcp()
+                && route.category() != IntentCategory.MCP_CONFIG_STATUS
                 && route.category() != IntentCategory.SYSTEM_CONFIG;
     }
 }

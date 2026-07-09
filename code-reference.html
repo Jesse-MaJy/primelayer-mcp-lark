@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lark Connect 代码参考文档</title>
+<style>
+:root{
+  --bg:#1a1a2e; --bg2:#16213e; --bg3:#0f1629; --card:#1e2a4a;
+  --text:#e0e0e0; --muted:#8892b0; --accent:#0ea5e9; --accent2:#0284c7;
+  --border:#2a2a4e; --code-bg:#0d1117; --badge-bg:#1e3a5f; --badge-text:#58a6ff;
+  --hover:#1a3a5c; --green:#56d364; --orange:#e3b341; --red:#f85149;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{font-family:'Noto Sans CJK SC',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);line-height:1.6;font-size:14px}
+code,pre,.mono{font-family:'JetBrains Mono','Fira Code','SF Mono','Cascadia Code',Consolas,'Courier New',monospace}
+
+/* Navbar */
+.navbar{position:fixed;top:0;left:0;right:0;height:56px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 20px;z-index:1000;gap:16px}
+.nav-brand{font-weight:700;font-size:16px;color:var(--accent);white-space:nowrap}
+.nav-tabs{display:flex;gap:4px}
+.nav-tab{background:transparent;border:1px solid transparent;color:var(--muted);padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px;font-family:inherit;transition:all .2s;white-space:nowrap}
+.nav-tab:hover{background:var(--hover);color:var(--text)}
+.nav-tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.nav-tab .count{display:inline-block;background:rgba(255,255,255,.2);padding:1px 7px;border-radius:10px;font-size:11px;margin-left:4px}
+.nav-tab.active .count{background:rgba(255,255,255,.3)}
+.nav-search{margin-left:auto;position:relative}
+.nav-search input{background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:7px 12px 7px 34px;border-radius:6px;font-size:13px;width:240px;font-family:inherit;outline:none;transition:border-color .2s}
+.nav-search input:focus{border-color:var(--accent)}
+.nav-search::before{content:'\1F50D';position:absolute;left:10px;top:50%;transform:translateY(-50%);font-size:13px;opacity:.5}
+.sidebar-toggle{display:none;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;cursor:pointer;font-size:16px}
+
+/* Sidebar */
+.sidebar{position:fixed;top:56px;left:0;width:280px;height:calc(100vh - 56px);overflow-y:auto;background:var(--bg3);border-right:1px solid var(--border);padding:12px 0;z-index:900}
+.sidebar::-webkit-scrollbar{width:6px}
+.sidebar::-webkit-scrollbar-track{background:transparent}
+.sidebar::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+.tree-group{margin-bottom:8px}
+.tree-group-title{padding:6px 16px;font-size:12px;color:var(--accent);font-weight:600;font-family:'JetBrains Mono',monospace;letter-spacing:.3px;border-bottom:1px solid var(--border);margin-bottom:4px;word-break:break-all}
+.tree-list{list-style:none}
+.tree-link{display:block;padding:5px 16px 5px 24px;color:var(--muted);text-decoration:none;font-size:13px;transition:all .15s;border-left:2px solid transparent}
+.tree-link:hover{background:var(--hover);color:var(--text)}
+.tree-link.active{color:var(--accent);border-left-color:var(--accent)}
+.tree-link.hidden-by-search{display:none}
+
+/* Content */
+.content{margin-left:280px;margin-top:56px;padding:20px 24px;max-width:1400px}
+.module-header{margin-bottom:20px;padding:16px 20px;background:var(--card);border:1px solid var(--border);border-radius:8px}
+.module-header h2{font-size:20px;color:var(--accent);margin-bottom:4px}
+.module-header .meta{font-size:13px;color:var(--muted)}
+
+/* Details panel */
+.class-panel{background:var(--card);border:1px solid var(--border);border-radius:8px;margin-bottom:12px;overflow:hidden;scroll-margin-top:70px}
+.class-panel>summary{padding:12px 16px;cursor:pointer;display:flex;align-items:center;gap:10px;font-weight:600;font-size:14px;background:var(--bg2);border-bottom:1px solid var(--border);list-style:none;user-select:none;flex-wrap:wrap}
+.class-panel>summary::-webkit-details-marker{display:none}
+.class-panel>summary::before{content:'\25B6';font-size:9px;color:var(--muted);transition:transform .2s;flex-shrink:0}
+.class-panel[open]>summary::before{transform:rotate(90deg)}
+.class-panel>summary:hover{background:var(--hover)}
+.class-name{color:var(--text)}
+.type-badge{display:inline-block;padding:2px 8px;font-size:11px;background:var(--badge-bg);color:var(--badge-text);border-radius:4px;font-weight:400;font-family:'JetBrains Mono',monospace;white-space:nowrap}
+.panel-body{padding:12px 16px}
+.item-desc{color:var(--muted);font-size:13px;margin-bottom:10px}
+.item-notes{color:var(--orange);font-size:12px;margin-top:8px;padding:6px 10px;background:rgba(227,179,65,.1);border-radius:4px;border-left:3px solid var(--orange)}
+
+/* Sections */
+.section{margin-bottom:12px}
+.section-title{font-size:12px;color:var(--accent);font-weight:600;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
+.item-list{list-style:none;padding-left:0}
+.item-list li{padding:4px 8px;font-size:13px;border-bottom:1px solid rgba(42,42,78,.4)}
+.item-list li:last-child{border-bottom:none}
+.item-list li code{color:#79c0ff;font-size:12px}
+
+/* Method table */
+.methods-table{width:100%;border-collapse:collapse;font-size:13px}
+.methods-table th{text-align:left;padding:8px 12px;background:var(--bg3);color:var(--muted);font-weight:500;border-bottom:1px solid var(--border);font-size:12px}
+.methods-table td{padding:8px 12px;border-bottom:1px solid rgba(42,42,78,.4);vertical-align:top}
+.methods-table td:first-child{font-family:'JetBrains Mono',monospace;font-size:12px;color:#79c0ff;word-break:break-word}
+.methods-table td:last-child{color:var(--text)}
+.methods-table tr:hover td{background:rgba(14,165,233,.05)}
+.methods-table tr:last-child td{border-bottom:none}
+
+.hidden-by-search{display:none!important}
+
+/* Responsive */
+@media(max-width:900px){
+  .nav-search{display:none}
+  .nav-tab{padding:6px 10px;font-size:12px}
+}
+@media(max-width:768px){
+  .sidebar{transform:translateX(-100%);transition:transform .3s;z-index:950}
+  .sidebar.open{transform:translateX(0)}
+  .content{margin-left:0;padding:12px}
+  .sidebar-toggle{display:block}
+  .nav-brand{font-size:14px}
+}
+.overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:940}
+.overlay.show{display:block}
+@media(min-width:769px){.overlay{display:none!important}}
+.no-results{padding:40px;text-align:center;color:var(--muted);font-size:15px}
+.group-header{font-size:15px;color:var(--accent);margin:20px 0 10px;padding:8px 0 6px;border-bottom:2px solid var(--border);font-family:'JetBrains Mono',monospace;word-break:break-all}
+.content-group{margin-bottom:10px}
+</style>
+</head>
+<body>
+<nav class="navbar">
+  <button class="sidebar-toggle" id="sidebarToggle">&#9776;</button>
+  <div class="nav-brand">Lark Connect</div>
+  <div class="nav-tabs">
+    <button class="nav-tab active" data-module="backend">backend <span class="count">47</span></button>
+    <button class="nav-tab" data-module="agent-service">agent-service <span class="count">15</span></button>
+    <button class="nav-tab" data-module="admin-web">admin-web <span class="count">22</span></button>
+  </div>
+  <div class="nav-search">
+    <input type="text" id="searchInput" placeholder="搜索类名..." />
+  </div>
+</nav>
+<div class="overlay" id="overlay"></div>
+<aside class="sidebar" id="sidebar"></aside>
+<main class="content" id="content"></main>
+<script>
+var DATA={};
+DATA.backend={
+title:'backend',subtitle:'Java',count:47,unit:'类',
+groups:[
+{name:'com.larkconnect.agent',items:[
+{id:'b1',name:'LarkConnectAgentApplication',type:'@SpringBootApplication + @ConfigurationPropertiesScan, class',desc:'Spring Boot 应用入口',methods:[['public static void main(String[] args)','启动 Spring 应用']]}
+]},
+{name:'com.larkconnect.agent.admin',items:[
+{id:'b2',name:'AdminController',type:'@RestController + @RequestMapping("/api/admin")',desc:'后台管理 REST 控制器',fields:['AdminService adminService','AiRuntimeConfigService aiRuntimeConfigService','ChainTraceService chainTraceService'],methods:[['login(@Valid @RequestBody LoginRequest)','POST /login 管理员登录'],['listUserBindings()','GET /user-bindings'],['saveUserBinding(@Valid @RequestBody UserBindingRequest)','POST /user-bindings'],['listProjectTokens()','GET /project-tokens'],['verifyProjectToken(@Valid @RequestBody ProjectTokenVerifyRequest)','POST /project-tokens/verify'],['saveProjectToken(@Valid @RequestBody ProjectTokenRequest)','POST /project-tokens'],['listChatBindings()','GET /chat-project-bindings'],['saveChatBinding(@Valid @RequestBody ChatProjectBindingRequest)','POST /chat-project-bindings'],['listAuditLogs()','GET /audit-logs'],['listAgentTasks()','GET /agent-tasks'],['listFeishuMessages()','GET /feishu-messages'],['aiSettings()','GET /ai-settings'],['saveAiSettings(@RequestBody AiSettingsRequest)','PUT /ai-settings'],['getChainTrace(@PathVariable String requestId)','GET /chain-trace/{requestId}']]},
+{id:'b3',name:'AdminDtos',type:'public final class（私有构造）',desc:'后台管理接口 DTO 集合',nested:['LoginRequest(username, password)','LoginResponse(token, expiresInSeconds)','UserBindingRequest(personName, feishuOpenId, primelayerUserId, primelayerUserName, status)','ProjectTokenRequest(id, ownerType, ownerId, primelayerUserId, projectId, projectName, projectRemark, mcpToken, tokenStatus, replaceToken, manualProjectConfirmed)','ProjectTokenVerifyRequest(ownerType, ownerId, primelayerUserId, mcpToken)','ChatProjectBindingRequest(feishuChatId, projectId, projectName, status)','AiSettingsRequest(engine, fastGptBaseUrl, fastGptModel, fastGptApiKey, fastGptTimeoutMs, fastGptMemoryEnabled)','AiSettingsResponse(engine, fastGptBaseUrl, fastGptModel, fastGptApiKeyConfigured, fastGptTimeoutMs, fastGptMemoryEnabled)']},
+{id:'b4',name:'AdminRepository',type:'@Repository',desc:'后台数据访问层',fields:['JdbcTemplate jdbcTemplate'],methods:[['ensureBootstrapUser(String username, String passwordHash)','确保引导管理员存在'],['findAdminByUsername(String username)','按用户名查找管理员'],['listUserBindings()','列出人员绑定'],['upsertUserBinding(UserBindingRequest)','新增/更新人员绑定'],['listProjectTokens()','列出项目 Token'],['findProjectToken(Long id)','按 id 查找项目 Token'],['findProjectToken(String ownerType, String ownerId, String projectId)','按绑定对象+项目查找'],['upsertProjectToken(ProjectTokenRequest, String ciphertext, String suffix, String importedBy, String verifyStatus, String verifyError)','新增/更新 Token'],['updateProjectTokenMetadata(ProjectTokenRequest)','仅更新元数据'],['updateProjectTokenVerification(Long tokenId, String verifyStatus, String verifyError)','更新验证状态'],['listChatBindings()','列出群绑定'],['upsertChatBinding(ChatProjectBindingRequest, String createdBy)','新增/更新群绑定'],['listAuditLogs()','列出审计日志（最多200条）'],['listAgentTasks()','列出 Agent 任务（最多200条）'],['listFeishuMessages()','多表关联查询飞书消息（最多300条）'],['private mapProjectToken(ResultSet, int)','ResultSet 行映射']],nested:['AdminUser(id, username, passwordHash, status)','ProjectTokenRecord(id, ownerType, ownerId, primelayerUserId, projectId, projectName, projectRemark, mcpTokenCiphertext, tokenHashSuffix, tokenStatus, verifyStatus, verifyError)']},
+{id:'b5',name:'AdminService',type:'@Service',desc:'后台业务逻辑层',fields:['AdminRepository repository','PasswordEncoder passwordEncoder','AdminTokenService tokenService','TokenCryptoService cryptoService','AppProperties properties','McpAdapter mcpAdapter'],methods:[['@PostConstruct bootstrapAdmin()','启动时创建引导管理员'],['login(LoginRequest)','管理员登录校验并签发 Token'],['listUserBindings()','查询人员绑定列表'],['saveUserBinding(UserBindingRequest)','保存人员绑定'],['listProjectTokens()','查询项目 Token 列表'],['verifyProjectToken(ProjectTokenVerifyRequest)','验证 Token，列出工具和项目候选'],['saveProjectToken(ProjectTokenRequest)','保存项目 Token'],['private normalizedProjectTokenRequest(...)','规范化参数'],['listChatBindings()','查询群绑定列表'],['saveChatBinding(ChatProjectBindingRequest)','保存群绑定'],['listAuditLogs()','查询审计日志'],['listAgentTasks()','查询 Agent 任务'],['listFeishuMessages()','查询飞书消息'],['private verifyToken(String ownerType, String ownerId, String token)','调 MCP listTools 验证'],['private collectCandidatesFromReadOnlyTools(...)','收集项目候选'],['private collectProjectCandidates(Object node, List candidates)','递归遍历收集项目候选'],['private normalizeCandidates(List candidates)','去重规范化'],['private projectMatchesVerifiedCandidate(...)','判断手动项目是否匹配候选'],['private tokenHashSuffix(String token)','SHA-256 后12位哈希']]},
+{id:'b6',name:'AdminTokenService',type:'@Service',desc:'管理后台 Token 签发与校验（HMAC-SHA256）',fields:['AppProperties properties'],methods:[['issue(Long adminId, String username)','签发 token'],['verify(String token)','校验返回 AdminPrincipal'],['private sign(String payload)','HMAC-SHA256 签名'],['private secret()','拼接密钥']]},
+{id:'b7',name:'AdminTokenFilter',type:'@Component, extends OncePerRequestFilter',desc:'拦截 /api/admin/** 请求，校验 Bearer Token',fields:['AdminTokenService tokenService','ObjectMapper objectMapper'],methods:[['doFilterInternal(request, response, chain)','过滤逻辑']]},
+{id:'b8',name:'AdminPrincipal',type:'record',desc:'管理员身份记录',fields:['Long id','String username']},
+{id:'b9',name:'AdminContext',type:'public final class',desc:'ThreadLocal 持有当前管理员身份',fields:['ThreadLocal<AdminPrincipal> CURRENT'],methods:[['set(AdminPrincipal)','设置当前管理员'],['current()','获取当前管理员'],['clear()','清除当前管理员']]},
+{id:'b10',name:'DebugController',type:'@RestController + @RequestMapping("/api/admin/debug")',desc:'调试 REST 控制器',fields:['DebugService debugService'],methods:[['health()','GET /health 健康检查'],['plan(@Valid DeepSeekPlanRequest)','POST /deepseek/plan'],['testDeepSeekConnection(@RequestBody DeepSeekConnectionRequest)','POST /deepseek/connection'],['testFastGptConnection(@RequestBody FastGptConnectionRequest)','POST /fastgpt/connection'],['summarize(@Valid DeepSeekSummarizeRequest)','POST /deepseek/summarize'],['callMcp(@Valid McpCallRequest)','POST /mcp/call'],['listMcpTools(@Valid McpToolsRequest)','POST /mcp/tools'],['askMcpByQuestion(@Valid McpQuestionRequest)','POST /mcp/question'],['mockFeishuEvent(@Valid FeishuMockEventRequest)','POST /feishu/mock-event'],['checkFeishuToken()','GET /feishu/token'],['testFeishuReply(@Valid FeishuReplyTestRequest)','POST /feishu/reply-test'],['sendFeishuCard(@Valid FeishuCardSendRequest)','POST /feishu/card'],['sendFeishuCardBatch(@Valid FeishuCardBatchSendRequest)','POST /feishu/card-batch'],['queryAgent(@Valid AgentQueryRequest)','POST /agent/query']]},
+{id:'b11',name:'DebugDtos',type:'public final class',desc:'调试接口 DTO 集合',nested:['DeepSeekPlanRequest(question, chatType)','DeepSeekSummarizeRequest(question, toolResults)','DeepSeekConnectionRequest(prompt)','FastGptConnectionRequest(prompt)','McpCallRequest(tokenId, toolName, arguments)','McpToolsRequest(tokenId)','McpQuestionRequest(tokenId, question)','FeishuMockEventRequest(event)','FeishuReplyTestRequest(messageId, text)','FeishuCardSendRequest(receiveIdType, receiveId, card)','FeishuCardBatchSendRequest(receiveIdType, receiveIds, card)','AgentQueryRequest(feishuOpenId, feishuChatId, chatType, message, sendFeishuMessage)']},
+{id:'b12',name:'DebugService',type:'@Service',desc:'调试业务逻辑层',fields:['15 个依赖注入: JdbcTemplate, ConnectionFactory, AppProperties, DeepSeekClient, TokenResolver, McpToolRegistry, McpAdapter, TokenCryptoService, FeishuClient, FeishuEventParser, AgentTaskService, ObjectMapper, AgentServiceClient, AiRuntimeConfigService, FastGptClient'],methods:[['health()','聚合健康状态'],['plan(DeepSeekPlanRequest)','DeepSeek 规划'],['testDeepSeekConnection(DeepSeekConnectionRequest)','连通性测试'],['testFastGptConnection(FastGptConnectionRequest)','FastGPT 连通性'],['summarize(DeepSeekSummarizeRequest)','DeepSeek 汇总'],['callMcp(McpCallRequest)','直接调用 MCP 工具'],['listMcpTools(McpToolsRequest)','列出 MCP 工具'],['askMcpByQuestion(McpQuestionRequest)','按问题选工具并调用'],['mockFeishuEvent(FeishuMockEventRequest)','模拟飞书事件'],['checkFeishuToken()','检查飞书 token'],['testFeishuReply(FeishuReplyTestRequest)','测试飞书回复'],['sendFeishuCard(FeishuCardSendRequest)','发送单张卡片'],['sendFeishuCardBatch(FeishuCardBatchSendRequest)','批量发送卡片'],['queryAgent(AgentQueryRequest)','Agent 查询'],['private queryAgentWithAgentService(...)','agent-service 模式'],['private queryAgentLegacy(...)','legacy 模式'],['private deterministicMcpPlan(question, tools)','确定性匹配'],['private normalizeQuestionArguments(...)','规范化参数']]}
+]},
+{name:'com.larkconnect.agent.agent',items:[
+{id:'b13',name:'IntentCategory',type:'enum',desc:'意图分类枚举',constants:['GENERAL_CHAT','SYSTEM_CONFIG','MCP_CONFIG_STATUS','WEATHER_EXTERNAL','PROJECT_QUERY','REPORT']},
+{id:'b14',name:'IntentRoute',type:'record',desc:'意图路由记录',fields:['IntentCategory category','String skillId','String title','String cardTemplate','boolean requiresMcp']},
+{id:'b15',name:'IntentRouter',type:'@Component',desc:'基于关键词的意图路由器',methods:[['route(String question)','按关键词匹配返回 IntentRoute'],['private containsAny(text, keywords)','包含任一关键词']]},
+{id:'b16',name:'AgentTaskMessage',type:'record',desc:'Agent 任务消息',fields:['String requestId']},
+{id:'b17',name:'AgentTaskService',type:'@Service',desc:'Agent 任务服务',fields:['JdbcTemplate jdbcTemplate','RabbitTemplate rabbitTemplate'],methods:[['createAndPublish(FeishuIncomingMessage)','创建任务并投递消息'],['loadTask(String requestId)','加载任务'],['markRunning(requestId)','标记运行中'],['markSucceeded(requestId)','标记成功'],['markFailed(requestId, error)','标记失败']]},
+{id:'b18',name:'AgentWorker',type:'@Component',desc:'Agent 消费者',fields:['AgentTaskService taskService','AgentOrchestrator orchestrator'],methods:[['@RabbitListener handle(AgentTaskMessage)','消费消息']]},
+{id:'b19',name:'AgentServiceDtos',type:'public final class',desc:'Agent Service DTO 集合',nested:['UserContext(openId, primelayerUserId)','ProjectRef(projectId, projectName)','AgentAnswerRequest(requestId, question, chatType, userContext, projects, availableTools, history, toolResults)','ToolCall(toolName, arguments, projectIds, reason, pagination, purpose) — 含静态工厂 create(...)','AgentAnswerResponse(needClarification, clarificationQuestion, skillId, projectScope, projectIds, toolCalls, answer, answerMetadata) — 含 requiresClarification() 方法']},
+{id:'b20',name:'AgentServiceClient',type:'@Component',desc:'Agent Service 远程客户端',fields:['AppProperties properties','RestClient restClient'],methods:[['isEnabled()','是否启用'],['answer(AgentAnswerRequest)','调用 Agent Service']]},
+{id:'b21',name:'AgentOrchestrator',type:'@Service',desc:'核心编排器',fields:['13 个依赖 + MAX_AGENT_SERVICE_ROUNDS = 4'],methods:[['process(String requestId)','主入口'],['private processWithFastGpt(...)','FastGPT 分支'],['private processNonMcpRoute(...)','非 MCP 分支'],['private processMcpConfigStatus(...)','MCP 配置状态分支'],['private processWithAgentService(...)','agent-service 多轮分支'],['private processWithDeepSeekPlan(...)','DeepSeek 多工具规划分支'],['private agentRequest(...)','构造请求'],['private loadAvailableTools(tokens)','加载可用工具'],['private executeAgentToolCalls(...)','执行工具调用'],['private callAgentToolSafely(...)','安全调用单个工具'],['private targetTokens(tokens, projectIds)','按 projectId 过滤'],['private shouldUsePagination(pagination)','判断分页'],['private selectedProjectIds(plan, context)','选中项目 ID'],['private fastGptChatId(openId, chatId, chatType)','计算 chatId'],['private configurationHint(error)','配置错误提示'],['private buildMcpConfigStatusAnswer(...)','MCP 配置状态答案']]}
+]},
+{name:'com.larkconnect.agent.ai',items:[
+{id:'b22',name:'AiEngineType',type:'enum',desc:'AI 引擎类型',constants:['LOCAL_AGENT','FASTGPT'],methods:[['from(String value)','从字符串解析引擎类型']]},
+{id:'b23',name:'AiRuntimeConfigService',type:'@Service',desc:'AI 运行时配置服务',fields:['6 个配置 key 常量 + JdbcTemplate + TokenCryptoService'],methods:[['loadSettings()','加载完整设置'],['publicSettings()','脱敏设置'],['saveSettings(AiSettingsRequest)','保存设置'],['private read(key)','读取配置'],['private upsert(key, value, description, sensitive)','更新或插入配置']],nested:['AiSettings(engine, fastGptBaseUrl, fastGptModel, fastGptApiKey, fastGptApiKeyConfigured, fastGptTimeoutMs, fastGptMemoryEnabled) — 含 toPublicResponse() 方法']},
+{id:'b24',name:'FastGptClient',type:'@Component',desc:'FastGPT 客户端',methods:[['answer(FastGptRequest, AiSettings)','调用 FastGPT'],['private restClient(settings)','构建 RestClient'],['private body(request, settings)','构造请求体']],nested:['FastGptRequest(requestId, question, openId, chatId, chatType)','FastGptResponse(answer, rawResponse, latencyMs)']},
+{id:'b25',name:'FastGptAnswerEngine',type:'@Component',desc:'FastGPT 回答引擎',methods:[['answer(FastGptRequest, AiSettings)','转发调用']]},
+{id:'b26',name:'AnswerEngineRouter',type:'@Component',desc:'回答引擎路由',methods:[['shouldUseFastGpt(IntentRoute)','判断是否用 FastGPT'],['answerWithFastGpt(FastGptRequest)','使用 FastGPT 回答'],['private canFastGptHandle(route)','不能处理 MCP_CONFIG_STATUS 与 SYSTEM_CONFIG']]}
+]},
+{name:'com.larkconnect.agent.audit',items:[
+{id:'b27',name:'ChainTrace',type:'class（POJO）',desc:'链调用追踪',fields:['String requestId','List<Node> nodes','List<Edge> edges','Summary summary'],methods:[['toMap()','转为 Map 结构'],['addNode(Node)','添加节点'],['addEdge(Edge)','添加边'],['addPlanNode(input, output, latencyMs)','添加规划节点'],['addMcpCallNode(toolName, projectId, projectName, page, pageIdx)','添加 MCP 调用节点'],['addMcpCallNode(..., extraMeta)','添加 MCP 调用节点（带额外元数据）'],['addAnalyzeNode(nodeId, label, input, output, latencyMs)','添加分析节点'],['lastNodeId()','最后一个节点 ID']],nested:['Node(id, type, label, status, latencyMs, metadata) — record','Edge(from, to) — record','Summary(totalMcpCalls, totalPages, totalLatencyMs, toolsUsed, projectsQueried) — static class']},
+{id:'b28',name:'ChainTraceService',type:'@Service',desc:'链调用追踪服务',methods:[['save(String requestId, ChainTrace)','保存链调（upsert）'],['load(String requestId)','加载链调']]},
+{id:'b29',name:'AuditService',type:'@Service',desc:'审计日志服务',methods:[['writeMain(requestId, openId, chatId, primelayerUserId, projectIds, question, intent, answer, latencyMs, error)','主审计'],['writeTool(requestId, projectId, primelayerUserId, toolName, arguments, status, latencyMs, error)','工具调用日志'],['writeModel(requestId, model, purpose, inputSummary, outputText, status, latencyMs, error)','模型调用日志']]}
+]},
+{name:'com.larkconnect.agent.common',items:[
+{id:'b30',name:'Status',type:'public final class',desc:'状态常量',constants:['ACTIVE','DISABLED','PENDING','RUNNING','SUCCEEDED','FAILED']},
+{id:'b31',name:'ApiResponse',type:'record<T>',desc:'统一响应封装',fields:['boolean success','T data','String error'],methods:[['ok(T data)','成功响应工厂'],['error(String error)','错误响应工厂']]},
+{id:'b32',name:'GlobalExceptionHandler',type:'@RestControllerAdvice',desc:'全局异常处理',methods:[['badRequest(IllegalArgumentException)','400 错误'],['validationError(MethodArgumentNotValidException)','400 验证错误'],['serverError(Exception)','500 服务器错误']]}
+]},
+{name:'com.larkconnect.agent.config',items:[
+{id:'b33',name:'AppProperties',type:'@ConfigurationProperties(prefix = "app"), record',desc:'应用配置属性',nested:['Admin(tokenTtlSeconds, bootstrapUsername, bootstrapPassword)','Agent(maxProjectsPerQuery, modelTimeoutMs, mcpTimeoutMs)','AgentService(enabled, baseUrl)','Feishu(appId, appSecret, verificationToken, encryptKey, echoEnabled)','DeepSeek(baseUrl, apiKey, model)','Mcp(endpoint, authHeaderName)']},
+{id:'b34',name:'SecurityConfig',type:'@Configuration + @EnableWebSecurity',desc:'安全配置',methods:[['securityFilterChain(HttpSecurity, AdminTokenFilter)','配置过滤链'],['passwordEncoder()','BCrypt 编码器']]},
+{id:'b35',name:'QueueBuilderSupport',type:'final class',desc:'队列构建支持',methods:[['static durableQueue(String name, String dlq)','构建持久化队列']]},
+{id:'b36',name:'RabbitConfig',type:'@Configuration',desc:'RabbitMQ 配置',constants:['EXCHANGE = "agent.events"','TASK_QUEUE = "agent.task.query"','DLQ = "agent.task.query.dlq"'],methods:[['agentExchange()','交换机 Bean'],['agentTaskQueue()','任务队列 Bean'],['agentTaskDlq()','死信队列 Bean'],['agentTaskBinding()','绑定 Bean'],['jackson2JsonMessageConverter()','JSON 消息转换器 Bean'],['rabbitListenerContainerFactory()','监听容器工厂 Bean（2-8 并发消费者）']]}
+]},
+{name:'com.larkconnect.agent.crypto',items:[
+{id:'b37',name:'TokenCryptoService',type:'@Service',desc:'AES-GCM-256 加解密服务',fields:['JdbcTemplate jdbcTemplate','SecureRandom secureRandom'],methods:[['encrypt(String plaintext)','加密返回 iv:ciphertext Base64'],['decrypt(String encrypted)','解密'],['private loadKey()','从 DB 加载主密钥'],['private generateAndStoreKey()','生成 AES-256 密钥']]}
+]},
+{name:'com.larkconnect.agent.deepseek',items:[
+{id:'b38',name:'DeepSeekPlan',type:'record',desc:'DeepSeek 规划结果',fields:['intent','projectScope','projectHints','toolCalls','needClarification','clarificationQuestion','answerStyle'],nested:['ToolCall(toolName, arguments)']},
+{id:'b39',name:'DeepSeekClient',type:'@Component',desc:'DeepSeek API 客户端',fields:['AppProperties','ObjectMapper','RestClient','McpToolRegistry'],methods:[['plan(requestId, question, chatType)','单工具意图规划'],['testConnection(String prompt)','连通性测试'],['planMcpDebugCall(question, tools)','MCP 调试规划'],['summarize(question, toolResults)','基于 MCP 数据汇总'],['answerGeneral(question)','通用问答'],['planMultiTool(question, availableTools)','多工具规划（0-5个）'],['analyzePerTool(toolName, allPageResults)','单工具分析'],['analyzeCross(question, perToolAnalyses)','跨工具分析'],['private heuristicPlan(question, chatType)','启发式兜底'],['private normalizePlan(rawContent, question, chatType)','规范化 JSON'],['private fallbackSummary(question, toolResults)','无 key 兜底汇总'],['private fallbackMcpPlan(question, tools)','无 key 兜底规划']],nested:['PerToolAnalysis(toolName, analysis)']}
+]},
+{name:'com.larkconnect.agent.feishu',items:[
+{id:'b40',name:'FeishuIncomingMessage',type:'record',desc:'飞书传入消息',fields:['messageId','openId','chatId','chatType','text']},
+{id:'b41',name:'FeishuEventParser',type:'@Component',desc:'飞书事件解析器',methods:[['parse(Map<String, Object> body)','解析事件为 FeishuIncomingMessage'],['private extractText(String contentJson)','提取文本内容']]},
+{id:'b42',name:'FeishuClient',type:'@Component',desc:'飞书 API 客户端',fields:['AppProperties','ObjectMapper','RestClient（baseUrl: open.feishu.cn）','volatile TenantToken tenantToken'],methods:[['sendText(chatId, text)','发送文本'],['sendAnswerCard(chatId, question, answer)','发送回答卡'],['sendAnswerCard(chatId, question, answer, title, template)','发送回答卡（带标题和模板）'],['sendAnswerCard(chatId, question, answer, title, template, metrics, visualElements)','发送回答卡（完整版）'],['replyText(messageId, text)','回复文本'],['replyAnswerCard(messageId, question, answer)','回复回答卡'],['replyAnswerCard(messageId, question, answer, title, template)','回复回答卡（带标题和模板）'],['replyAnswerCard(messageId, question, answer, title, template, metrics, visualElements)','回复回答卡（完整版）'],['replyWelcomeCard(messageId)','回复欢迎卡'],['replyMcpRequiredCard(messageId, McpConfigCheckResult)','回复 MCP 缺失卡'],['sendMcpRequiredCard(receiveIdType, receiveId, McpConfigCheckResult)','发送 MCP 缺失卡'],['sendProjectEntryCard(receiveIdType, receiveId, McpConfigCheckResult)','发送项目入口卡'],['sendQuestionPromptCard(receiveIdType, receiveId, question)','发送预设问题卡'],['replyCard(messageId, card)','回复卡片'],['sendCard(receiveIdType, receiveId, card)','发送卡片'],['private buildAnswerCard(...)','卡片构建器'],['private buildWelcomeCard()','欢迎卡构建器'],['private buildMcpRequiredCard(...)','MCP 缺失卡构建器'],['private buildProjectEntryCard(...)','项目入口卡构建器'],['private buildQuestionPromptCard(question)','预设问题卡构建器'],['private markdownBlock(content)','Markdown 块构建器'],['private fieldBlock(fields)','字段块构建器'],['private actionBlock(actions)','操作块构建器'],['private buttonAction(...)','按钮操作构建器'],['private shortField(content)','短字段构建器'],['private noteBlock(content)','备注块构建器'],['private tenantAccessToken()','获取/刷新 token（双重检查锁）'],['public checkTenantAccessToken()','检查 token 状态']],nested:['TenantToken(token, expiresAtMillis) — 私有 record','CardMetric(label, value)']},
+{id:'b43',name:'FeishuEventController',type:'@RestController + @RequestMapping("/api/feishu")',desc:'飞书事件回调控制器',methods:[['receive(@RequestBody Map)','POST /events 事件回调'],['receiveCardEvent(@RequestBody Map)','POST /card-events 卡片回调'],['private isStartupKeyword(text)','启动关键词判断']]},
+{id:'b44',name:'FeishuWsEchoBot',type:'@Component',desc:'飞书 WebSocket 回声机器人',methods:[['@PostConstruct start()','启动 WS 客户端'],['private handleMessage(P2MessageReceiveV1 event)','处理消息事件'],['private isStartupKeyword(text)','启动关键词判断']]}
+]},
+{name:'com.larkconnect.agent.mcp',items:[
+{id:'b45',name:'McpToolRegistry',type:'@Component',desc:'MCP 工具注册表',fields:['List<ToolDefinition> tools — 3 个内置只读工具'],methods:[['isEnabled(name)','是否注册'],['describeTools()','描述工具'],['validate(toolName, arguments)','校验白名单'],['validate(toolName, arguments, availableTools)','额外校验已发现'],['filterDiscoveredTools(discoveredTools)','过滤为白名单'],['defaultToolMaps()','默认工具列表'],['private isAllowedReadOnlyTool(name)','白名单+前缀'],['private isMutatingName(name)','变更类判断']],nested:['ToolDefinition(name, description, enabled, timeoutMs)']},
+{id:'b46',name:'McpAdapter',type:'@Component',desc:'MCP 协议适配器',fields:['AppProperties','RestClient','ObjectMapper','DEFAULT_PAGE_SIZE=100','MAX_PAGES=50'],methods:[['listTools(String token)','tools/list'],['callTool(token, toolName, arguments)','tools/call'],['callToolWithPagination(token, toolName, arguments)','分页调用'],['callToolWithPagination(token, toolName, arguments, pageSize)','指定页大小分页'],['private send(token, payload)','发送请求'],['private tryInitialize(token)','握手获取 sessionId'],['private sendNotification(token, sessionId)','notifications/initialized'],['private sendRequest(token, payload, sessionId)','JSON-RPC 请求'],['private parseResponse(body)','解析响应'],['private extractJson(body)','从 JSON/SSE 提取'],['extractTotalCount(response)','提取总数'],['extractItems(response)','提取数据项']],nested:['McpSession(initialized, sessionId) — 私有 record','PaginationResult(pages, totalCount, totalPages, successPages, failedPages)','PageData(page, pageSize, status, rawRequest, rawResponse, error, latencyMs)']}
+]},
+{name:'com.larkconnect.agent.token',items:[
+{id:'b47',name:'TokenResolver',type:'@Service',desc:'MCP Token 解析与项目匹配（含拼音首字母匹配）',fields:['JdbcTemplate','TokenCryptoService','3 个 owner 类型常量'],methods:[['resolve(openId, chatId, chatType, DeepSeekPlan plan, int maxProjects)','按 plan 解析 Token'],['resolveCandidates(openId, chatId, chatType, int maxProjects)','解析全部候选 Token'],['checkMcpConfig(openId, chatId, chatType, int maxProjects)','检查 MCP 配置'],['updateVerificationStatus(tokenId, verifyStatus, verifyError)','更新验证状态'],['private findDirectOwnerTokens(openId, chatId, chatType, maxProjects)','按 owner 查找'],['private resolveLegacy(...)','旧版解析'],['private resolveLegacyCandidates(...)','旧版候选解析'],['private findTokenByHint(tokens, hint)','按提示匹配（精确-包含-拼音）'],['private findTokenByPinyinInitials(tokens, hint)','拼音首字母匹配'],['private static getPinyinInitials(text)','文本转拼音首字母'],['private static getSinglePinyinInitial(char ch)','单字符拼音首字母']],nested:['TokenEntry(tokenId, projectId, projectName, projectRemark, token)','ProjectRef(projectId, projectName)','McpConfigCheckResult(configured, reason, openId, primelayerUserId, ownerType, ownerId, projects) — 含 configured(...) / missing(...) 工厂','ResolvedContext(primelayerUserId, tokens, errorMessage) — 含 ok(...) / error(...) 工厂与 hasError()']}
+]}
+]};
+DATA['agent-service']={
+title:'agent-service',subtitle:'Python',count:15,unit:'模块',
+groups:[
+{name:'app/',items:[
+{id:'a1',name:'app/main.py',type:'FastAPI',desc:'FastAPI 应用入口',methods:[['health()','GET /health 健康检查，返回技能列表'],['answer(request: AgentAnswerRequest)','POST /v1/agent/answer 问答接口']]},
+{id:'a2',name:'app/models.py',type:'Pydantic',desc:'Pydantic 数据模型定义',classes:['UserContext — 用户上下文（openId, primelayerUserId）','ProjectRef — 项目引用（projectId, projectName）','ToolDefinition — 工具定义（name, description, inputSchema）','ToolCall — 工具调用（toolName, arguments, projectIds, reason, pagination, purpose）','AgentAnswerRequest — 请求（requestId, question, chatType, userContext, projects, availableTools, history, toolResults）','AgentAnswerResponse — 响应（needClarification, clarificationQuestion, skillId, projectScope, projectIds, toolCalls, answer, answerMetadata）','TimeRange — 时间范围（label, start, end, timezone, source）','ProjectMatch — 项目匹配结果（projectIds, confidence, needClarification, clarificationQuestion）','DomainIntent — 领域意图（domains, projectHints, timeRange, depth, confidence）']},
+{id:'a3',name:'app/skills.py',type:'dataclass + 常量',desc:'技能定义与关键词路由',classes:['SkillDefinition（dataclass: skillId, name, description, triggerExamples, allowedTools, systemPrompt, requiredContext, answerTemplate）'],constants:['SKILLS — 5 个技能元组（project_report, project_status_qa, task_risk_qa, weekly_report, general_mcp_qa）'],methods:[['classify_skill(question: str) -> SkillDefinition','关键词匹配评分路由，0分时返回兜底技能'],['tool_allowed_for_skill(tool_name: str, skill: SkillDefinition) -> bool','工具白名单校验']]},
+{id:'a4',name:'app/agent_graph.py',type:'LangGraph',desc:'LangGraph 五节点工作流编排（LangGraph 不可用时降级为函数链）',constants:['READ_ONLY_PREFIXES'],classes:['AgentState（TypedDict: request, skill, project_scope, project_ids, tool_calls, response）'],methods:[['run_agent(request) -> AgentAnswerResponse','主入口'],['_build_graph()','构建 LangGraph 图'],['_classify_skill(state)','节点1：技能分类'],['_select_project_scope(state)','节点2：项目范围选择（群聊->当前项目；含全部->全部；否则匹配->单项目；兜底走别名解析）'],['_plan_tool_calls(state)','节点3：工具调用规划（项目工作流->领域工作流->单工具兜底）'],['_summarize_answer(state)','节点4：答案汇总（领域报告->模型汇总->确定性汇总）'],['_quality_check(state)','节点5：强制追加数据范围声明'],['_uses_project_workflow(request, skill) -> bool','判断是否走项目报告工作流'],['_project_matches_question(project_id, project_name, text) -> bool','项目名/ID 匹配'],['_select_tool(question, skill, tools) -> ToolDefinition | None','关键词评分选工具'],['_is_read_only(tool_name) -> bool','只读工具判断'],['_build_arguments(question, tool) -> dict','自动填充工具参数'],['_model_summary(request, skill) -> str | None','DeepSeek 模型汇总'],['_deterministic_summary(request, skill, project_scope) -> str','确定性兜底汇总'],['_summary_metadata(request, skill) -> dict','汇总元信息'],['_result_is_success(item) -> bool','成功状态判断'],['_extract_domain_data(tool_results) -> dict','合并 query_form_data_list 结果'],['_domain_summary(request) -> str | None','领域管理报告生成']]},
+{id:'a5',name:'app/project_workflow.py',type:'Python',desc:'项目报告多轮工作流编排',constants:['PROJECT_REPORT_SKILL_ID','FORM_KEYWORDS','REPORT_KEYWORDS'],methods:[['is_project_report_question(question) -> bool','判断是否项目报告问题'],['plan_project_workflow(request, project_ids) -> list[ToolCall]','规划工作流（初始->异步轮询->表单数据->详情）'],['summarize_project_workflow(request, project_scope) -> str','汇总项目报告'],['workflow_metadata(request, phase, round_number=1) -> dict','工作流元信息'],['_initial_calls(request, project_ids)','初始调用（get_base_form_info + match_form_resource + get_report）'],['_async_report_calls(request, project_ids)','异步报告轮询（get_async_task_result）'],['_form_data_calls(request, project_ids)','表单数据查询（query_form_data_list）'],['_detail_calls(request, project_ids)','详情获取（batch_get_form_value_detail）'],['_keywords_for_question(question) -> list[str]','问题关键词提取'],['_wants_report(question) -> bool','是否需要报告'],['_report_type(question) -> str','报告类型（DAILY/WEEKLY/MONTHLY/QUARTERLY）'],['_time_range(question) -> tuple[str, str]','时间范围计算'],['_extract_forms(value) -> list[dict]','递归提取表单'],['_walk(value) -> list[Any]','递归遍历'],['_project_background(request, succeeded) -> str','项目背景'],['_section_summary(succeeded, keywords, empty_text) -> str','分节汇总'],['_risk_summary(succeeded, failed) -> str','风险汇总'],['_sanitize_raw_error(text) -> str','错误信息脱敏']]},
+{id:'a6',name:'app/tool_catalog.py',type:'Python',desc:'MCP 工具分类注册表',classes:['ToolInfo（dataclass: name, category, description）'],methods:[['catalog_tools(tools) -> dict[str, ToolInfo]','工具编目'],['categorize_tool(name) -> str','分类（base_context/form_resource/form_data/report/file_tree/file_data/bim/read_only/other）'],['has_tool(tools, name) -> bool','工具是否存在']]},
+{id:'a7',name:'app/domain_config.py',type:'Python',desc:'领域配置加载（YAML）',classes:['PaginationConfig（defaultPageSize, maxPages, maxItems）','ProjectAliasConfig（projectId, projectName, aliases）','DomainConfig（keywords, coreForms, supplementalForms, excludeForms）','AppDomainConfig（pagination, projects, domains）'],methods:[['load_domain_config(path=None) -> AppDomainConfig','从 YAML 加载'],['get_domain_config() -> AppDomainConfig','返回缓存的单例配置']]},
+{id:'a8',name:'app/domain_config.yaml',type:'YAML',desc:'领域配置文件',notes:'分页参数、项目别名（roche: 罗氏诊断项目）、4 个领域（quality/safety/progress/risk）的关键词、核心表单、补充表单、排除表单'},
+{id:'a9',name:'app/domain_intent.py',type:'Python',desc:'领域意图检测',methods:[['detect_domain_intent(question: str, config: AppDomainConfig) -> DomainIntent','关键词匹配分类到 quality/safety/progress/risk/general 域']]},
+{id:'a10',name:'app/form_planner.py',type:'Python',desc:'表单发现与数据查询规划',classes:['FormPlanResult（toolCalls, needClarification, clarificationQuestion）'],methods:[['plan_form_discovery(intent, project_ids, available_tools, config, tool_results) -> list[ToolCall]','两阶段表单发现（Phase1: match_form_resource；Phase2: 排序+query_form_data_list）'],['rank_candidate_forms(candidates, domain, config) -> list[dict]','按核心/补充/未匹配/排除四级排序'],['plan_form_data_queries(candidates, intent, project_ids, available_tools, config) -> FormPlanResult','生成高置信度数据查询'],['_phase1_match_form_calls(intent, project_ids, available_tools, config)','生成核心表单匹配调用'],['_extract_candidates_from_results(tool_results)','从结果提取表单候选'],['_build_clarification_question(candidates, intent) -> str','构建澄清问题']]},
+{id:'a11',name:'app/metric_summarizer.py',type:'Python',desc:'确定性指标计算与管理报告生成',methods:[['compute_quality_metrics(data) -> dict','质量域指标（未整改数、高严重度、状态/类型/区域/责任人分布）'],['compute_safety_metrics(data) -> dict','安全域指标（高风险、未整改、风险等级/区域分布）'],['compute_progress_metrics(data) -> dict','进度域指标（滞后节点数、计划偏差、状态分布）'],['compute_risk_metrics(data) -> dict','风险域指标（高风险、逾期、未解决、等级分布）'],['build_management_report(domain, metrics, data_sources, failed_sources, domain_intent, use_model=True) -> str','生成7段式管理报告（结论/关键指标/问题分布/趋势风险/建议动作/数据范围/失败说明）'],['_build_conclusion(domain, metrics, label) -> str','按域生成结论'],['_build_key_metrics(domain, metrics) -> list[str]','关键指标'],['_build_distribution(domain, metrics) -> list[str]','问题分布'],['_build_trend_risk(domain, metrics) -> str','趋势与风险'],['_build_recommendations(domain, metrics) -> list[str]','建议动作'],['_build_data_range(domain_intent, data_sources) -> list[str]','数据范围']]},
+{id:'a12',name:'app/project_alias.py',type:'Python',desc:'项目别名解析器（多阶段匹配）',constants:['CONFIDENCE_ID_MATCH=0.95','CONFIDENCE_NAME_MATCH=0.9','CONFIDENCE_ALIAS_MATCH=0.85','CONFIDENCE_PARTIAL_NAME=0.75','CONFIDENCE_GAP_THRESHOLD=0.15'],methods:[['resolve_project_ids(question, projects, config) -> ProjectMatch','多阶段匹配（精确ID->项目名->别名->部分名），多匹配时按置信差距决定或要求澄清'],['_partial_name_match(project_name, question) -> bool','双字组匹配（过滤通用词）']]},
+{id:'a13',name:'app/time_range.py',type:'Python',desc:'时间范围解析器',constants:['_RELATIVE_PATTERNS（12 种模式）','DOMAIN_DEFAULTS（quality/safety/risk->近30天，progress->本周）'],methods:[['resolve_time_range(question, today=None, default_domain=None) -> TimeRange','解析今天/昨天/本周/上周/本月/上月/近N天/本季度/上季度/显式日期范围，无匹配时用域默认']]},
+{id:'a14',name:'app/detail_planner.py',type:'Python',desc:'选择性详情抓取规划',classes:['DetailPlanResult（toolCalls, fetched_ids）'],constants:['CLOSED_STATUSES（已完成/已关闭/已消除/关闭/完成/合格/通过）','HIGH_SEVERITY（高/严重/紧急/critical/high）'],methods:[['should_fetch_detail(record) -> bool','判断记录是否需要详情（未关闭/高严重度/逾期/阻塞/未知->True）'],['plan_detail_enrichment(tool_results, already_fetched, max_per_form=20, max_total=80) -> DetailPlanResult','按优先级生成 batch_get_form_value_detail 调用'],['_priority_score(record) -> int','优先级评分（未关闭+1/高严重度+2/逾期+2/阻塞+1）'],['_extract_records_from_results(tool_results) -> list[dict]','递归提取含 dataId 的记录']]},
+{id:'a15',name:'app/evaluation.py',type:'Python',desc:'评估指标计算',classes:['EvaluationResult（dataclass: case_id, tool_selection_accuracy, time_range_accuracy, core_form_accuracy, answer_scope_coverage, failure_disclosure_coverage）'],methods:[['compute_tool_selection_accuracy(predicted, expected) -> float','Jaccard 相似度'],['compute_time_range_accuracy(predicted, expected) -> float','时间范围匹配（全匹配1.0/半匹配0.5）'],['compute_core_form_accuracy(predicted, expected) -> float','核心表单召回率'],['compute_answer_scope_coverage(answer, required_elements) -> float','答案要素覆盖率'],['compute_failure_disclosure_coverage(failed_sources, answer) -> float','失败披露覆盖率'],['evaluate_case(case, prediction) -> EvaluationResult','评估单个用例'],['evaluate_all(cases, predictions) -> dict[str, float]','批量评估返回平均分']]}
+]}]};
+DATA['admin-web']={
+title:'admin-web',subtitle:'Vue3/TS',count:22,unit:'文件',
+groups:[
+{name:'src/',items:[
+{id:'w1',name:'src/main.ts',type:'Vue3 入口',desc:'应用入口，创建 Vue 应用并挂载 Pinia、Router、Ant Design Vue'},
+{id:'w2',name:'src/App.vue',type:'Vue3 SFC',desc:'根组件，仅包含 <router-view />'}
+]},
+{name:'src/api/',items:[
+{id:'w3',name:'src/api/http.ts',type:'Axios',desc:'Axios HTTP 实例',constants:['http（axios 实例，baseURL=空, timeout=30000）'],notes:'请求拦截器注入 Bearer Token；响应拦截器检查 success 字段'},
+{id:'w4',name:'src/api/admin.ts',type:'TS API',desc:'管理后台 API 封装',interfaces:['LoginResponse（token, expiresInSeconds）','AiSettings（engine, fastGptBaseUrl, fastGptModel, fastGptApiKeyConfigured, fastGptTimeoutMs, fastGptMemoryEnabled）'],methods:[['login(payload)','POST /api/admin/login'],['listUserBindings()','GET /user-bindings'],['saveUserBinding(payload)','POST /user-bindings'],['listProjectTokens()','GET /project-tokens'],['verifyProjectToken(payload)','POST /project-tokens/verify'],['saveProjectToken(payload)','POST /project-tokens'],['listChatBindings()','GET /chat-project-bindings'],['saveChatBinding(payload)','POST /chat-project-bindings'],['listAuditLogs()','GET /audit-logs'],['listAgentTasks()','GET /agent-tasks'],['listFeishuMessages()','GET /feishu-messages'],['getAiSettings()','GET /ai-settings'],['saveAiSettings(payload)','PUT /ai-settings'],['debugHealth()','GET /debug/health'],['debugDeepSeekConnection(payload)','POST /debug/deepseek/connection'],['debugFastGptConnection(payload)','POST /debug/fastgpt/connection'],['debugDeepSeekPlan(payload)','POST /debug/deepseek/plan'],['debugDeepSeekSummarize(payload)','POST /debug/deepseek/summarize'],['debugMcpCall(payload)','POST /debug/mcp/call'],['debugMcpTools(payload)','POST /debug/mcp/tools'],['debugMcpQuestion(payload)','POST /debug/mcp/question'],['debugFeishuToken()','GET /debug/feishu/token'],['debugFeishuMockEvent(payload)','POST /debug/feishu/mock-event'],['debugFeishuCard(payload)','POST /debug/feishu/card'],['debugFeishuCardBatch(payload)','POST /debug/feishu/card-batch'],['debugAgentQuery(payload)','POST /debug/agent/query'],['getChainTrace(requestId)','GET /chain-trace/{requestId}']]}
+]},
+{name:'src/router/',items:[
+{id:'w5',name:'src/router/index.ts',type:'Vue Router',desc:'路由表与登录守卫',routes:[['/login','登录页'],['/','AdminLayout（主布局）'],['/people-configs','人员配置'],['/chat-bindings','群项目绑定'],['/system-settings','系统设置'],['/audit-logs','审计日志'],['/agent-tasks','Agent 任务'],['/chain-trace/:requestId','链路详情'],['/feishu-messages','飞书消息'],['/test-center','测试中心']]}
+]},
+{name:'src/stores/',items:[
+{id:'w6',name:'src/stores/auth.ts',type:'Pinia',desc:'Pinia 鉴权 store',variables:['token（State）'],methods:[['login(username, password)','登录'],['logout()','登出']]}
+]},
+{name:'src/utils/',items:[
+{id:'w7',name:'src/utils/time.ts',type:'TS 工具',desc:'时间格式化工具',methods:[['formatChinaDateTime(value)','格式化 YYYY-MM-DD HH:mm:ss'],['formatChinaDate(value)','中文日期含星期'],['timeColumn(title, dataIndex, extra)','表格列工厂']]}
+]},
+{name:'src/components/',items:[
+{id:'w8',name:'src/components/CrudPage.vue',type:'Vue3 SFC',desc:'通用增删改查页面',props:['title','columns','fields','load','save'],variables:['rows','loading','visible','form'],methods:[['refresh()','刷新数据'],['open()','打开弹窗'],['submit()','提交表单']]},
+{id:'w9',name:'src/components/ReadonlyTable.vue',type:'Vue3 SFC',desc:'通用只读表格',props:['title','columns','load'],variables:['rows','loading'],methods:[['refresh()','刷新数据']]},
+{id:'w10',name:'src/components/ResultViewer.vue',type:'Vue3 SFC',desc:'JSON 结果展示',props:['data'],variables:['formatted（computed）'],methods:[['copy()','复制结果']]}
+]},
+{name:'src/views/',items:[
+{id:'w11',name:'src/views/LoginView.vue',type:'Vue3 SFC',desc:'管理员登录页',variables:['loading','form（默认 admin/admin123）'],methods:[['submit()','提交登录']]},
+{id:'w12',name:'src/views/AdminLayout.vue',type:'Vue3 SFC',desc:'管理后台主布局（侧边栏+顶栏）',methods:[['go(path)','导航到指定路径'],['logout()','登出']]},
+{id:'w13',name:'src/views/PeopleConfigView.vue',type:'Vue3 SFC',desc:'人员配置页面（合并表格 + Token 配置向导 4 步）',variables:['loading','verifying','savingToken','userModalOpen','tokenDrawerOpen','tokenStepIndex','userBindings','projectTokens','health','verifyResult','selectedProjectKey','manualActiveKey','editingTokenId','replaceTokenMode','userForm','tokenForm'],computed:['mcpEndpoint','mcpAuthHeaderName','activeTokenCount','failedVerifyCount','unconfiguredPeopleCount','peopleOptions','userByOpenId','selectedUser','selectedUserLabel','tokenRows','combinedRows','projectCandidates','verifyWarnings','selectedProject','finalProjectId','finalProjectName','canShowSave','hasExistingToken','keepingExistingToken'],methods:[['refresh()','刷新数据'],['openUserModal()','打开用户弹窗'],['saveUser()','保存用户'],['openTokenWizard()','打开 Token 配置向导'],['nextTokenStep()','下一步'],['startReplaceToken()','开始替换 Token'],['verifyToken()','验证 Token'],['confirmProjectStep()','确认项目步骤'],['saveToken()','保存 Token'],['combinedRow(...)','合并行数据'],['projectKey(...)','项目键'],['tokenStatusColor(status)','Token 状态颜色'],['verifyStatusColor(status)','验证状态颜色'],['verifyStatusLabel(status)','验证状态标签'],['displayName(...)','显示名称'],['tokenOwnerId(...)','Token 拥有者 ID'],['text(...)','文本'],['showError(error)','显示错误']]},
+{id:'w14',name:'src/views/ChatBindingsView.vue',type:'Vue3 SFC',desc:'群项目绑定页（基于 CrudPage）',columns:['feishuChatId','projectId','projectName','status','createdBy','updatedAt']},
+{id:'w15',name:'src/views/AuditLogsView.vue',type:'Vue3 SFC',desc:'审计日志页（基于 ReadonlyTable）',columns:['requestId','openId','primelayerUserId','projects','intent','latencyMs','error','createdAt']},
+{id:'w16',name:'src/views/AgentTasksView.vue',type:'Vue3 SFC',desc:'Agent 任务列表页',variables:['loading','data'],methods:[['viewTrace(requestId)','跳转链路详情'],['statusColor(status)','状态颜色']]},
+{id:'w17',name:'src/views/ChainTraceView.vue',type:'Vue3 SFC',desc:'MCP 调用链路详情页（Mermaid 图 + 节点表 + 详情弹窗）',variables:['loading','error','traceData','mermaidContainer','modalOpen','modalTitle','modalInput','modalOutput','modalMeta'],methods:[['renderMermaid()','动态导入 mermaid 渲染流程图'],['openNodeDetail(node)','打开详情'],['formatJson(value)','JSON 格式化'],['formatMs(ms)','毫秒转可读']]},
+{id:'w18',name:'src/views/FeishuMessagesView.vue',type:'Vue3 SFC',desc:'飞书消息记录页（展开行详情 + 链路抽屉）',variables:['rows','loading','columns','drawerOpen','traceLoading','traceError','traceData','mermaidContainer','nodeModalOpen','detailInput','detailOutput','detailMeta'],methods:[['onResizeColumn(w, col)','列宽调整'],['loadRows()','加载行数据'],['openTrace(requestId)','打开链路'],['renderMermaid()','渲染 Mermaid 图'],['showNodeDetail(node)','显示节点详情'],['formatJson(value)','JSON 格式化'],['formatMs(ms)','毫秒转可读'],['statusColor(status)','状态颜色'],['diagnosticText(record)','诊断文本'],['splitToolNames(raw)','拆分工具名']]},
+{id:'w19',name:'src/views/TestCenterView.vue',type:'Vue3 SFC',desc:'测试中心页（6 个 Tab：健康检查/DeepSeek/MCP/Agent/飞书事件/飞书卡片）',variables:['activeTab','health','tokenOptions','personOptions','loading(10项)','deepseek(6项)','mcp(3项)','agent(5项)','feishu(3项)','feishuCard(6项)'],constants:['receiveIdTypeOptions','cardPresets（6种卡片预设）','cardPresetOptions','defaultPresetKey'],computed:['healthItems','connectionOk','mcpOk','feishuTokenOk','feishuCardOk','selectedPreset','agentResult','agentPlan','agentSummaryVisible','agentPlanner','agentSkill','agentProjectScope','agentToolCallCount','agentFinalAnswer'],methods:[['refreshAll()','刷新全部'],['loadHealth()','加载健康状态'],['loadTokens()','加载 Token 列表'],['loadPeople()','加载人员列表'],['runDeepSeekPlan()','运行 DeepSeek 规划'],['runDeepSeekConnection()','运行 DeepSeek 连接测试'],['runDeepSeekSummarize()','运行 DeepSeek 汇总'],['loadMcpTools()','加载 MCP 工具'],['runMcpQuestion()','运行 MCP 问题'],['runAgentQuery()','运行 Agent 查询'],['runFeishuMock()','运行飞书模拟事件'],['checkFeishuToken()','检查飞书 Token'],['selectCardPreset()','选择卡片预设'],['applyCardPreset()','应用卡片预设'],['formatFeishuCardJson()','格式化飞书卡片 JSON'],['sendFeishuCard()','发送飞书卡片'],['resetFeishuCard()','重置飞书卡片'],['getCardPreset()','获取卡片预设'],['stringifyCard()','字符串化卡片'],['currentDateLabel()','当前日期标签'],['currentDateTimeLabel()','当前日期时间标签'],['textBlock()','文本块'],['fieldBlock()','字段块'],['noteBlock()','备注块'],['buttonAction()','按钮操作'],['createPrimelayerAnswerCard()','创建 Primelayer 回答卡'],['createBasicTestCard()','创建基础测试卡'],['createDailyTodoCard()','创建每日待办卡'],['createConstructionDailyCard()','创建施工日志卡'],['createRiskAlertCard()','创建风险预警卡'],['createWeeklySummaryCard()','创建周报卡'],['formatReceiveIds()','格式化接收者 ID'],['formatBatchSummary()','格式化批量摘要'],['parseJson()','解析 JSON'],['showError(error)','显示错误']]},
+{id:'w20',name:'src/views/SystemSettingsView.vue',type:'Vue3 SFC',desc:'系统配置页（切换 AI 引擎、FastGPT 参数、连接测试）',variables:['saving','testing','apiKeyConfigured','testPrompt','testResult','form（engine, fastGptBaseUrl, fastGptModel, fastGptApiKey, fastGptTimeoutMs, fastGptMemoryEnabled）'],computed:['engineHint','apiKeyPlaceholder'],methods:[['loadSettings()','加载设置'],['saveSettings()','保存设置'],['testFastGpt()','测试 FastGPT 连接'],['showError(error)','显示错误']]},
+{id:'w21',name:'src/views/UserBindingsView.vue',type:'Vue3 SFC',desc:'用户绑定页（旧版，已重定向到 /people-configs）',notes:'基于 CrudPage'},
+{id:'w22',name:'src/views/ProjectTokensView.vue',type:'Vue3 SFC',desc:'项目 Token 页（旧版，已重定向到 /people-configs）',notes:'基于 CrudPage'}
+]}]};
+
+function esc(s){if(s==null)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function sl(title,items){
+if(!items||items.length===0)return'';
+return '<div class="section"><h4 class="section-title">'+esc(title)+'</h4><ul class="item-list">'+items.map(function(i){return '<li><code>'+esc(i)+'</code></li>'}).join('')+'</ul></div>';
+}
+function mt(methods){
+if(!methods||methods.length===0)return'';
+return '<div class="section"><h4 class="section-title">方法</h4><table class="methods-table"><thead><tr><th style="width:55%">签名</th><th>说明</th></tr></thead><tbody>'+methods.map(function(m){return '<tr><td><code>'+esc(m[0])+'</code></td><td>'+esc(m[1])+'</td></tr>'}).join('')+'</tbody></table></div>';
+}
+function rt(title,routes){
+if(!routes||routes.length===0)return'';
+return '<div class="section"><h4 class="section-title">'+esc(title)+'</h4><table class="methods-table"><thead><tr><th style="width:40%">路径</th><th>说明</th></tr></thead><tbody>'+routes.map(function(r){return '<tr><td><code>'+esc(r[0])+'</code></td><td>'+esc(r[1])+'</td></tr>'}).join('')+'</tbody></table></div>';
+}
+function ri(item){
+var s='';
+if(item.desc)s+='<p class="item-desc">'+esc(item.desc)+'</p>';
+s+=sl('Props',item.props);
+s+=sl('字段',item.fields);
+s+=sl('变量',item.variables);
+s+=sl('Computed',item.computed);
+s+=sl('常量',item.constants);
+s+=sl('接口',item.interfaces);
+s+=sl('类',item.classes);
+s+=sl('嵌套 record / class',item.nested);
+s+=sl('表格列',item.columns);
+s+=rt('路由',item.routes);
+s+=mt(item.methods);
+if(item.notes)s+='<p class="item-notes">'+esc(item.notes)+'</p>';
+return '<details open class="class-panel" data-name="'+esc(item.name.toLowerCase())+'" id="'+esc(item.id)+'"><summary><span class="class-name">'+esc(item.name)+'</span>'+(item.type?'<span class="type-badge">'+esc(item.type)+'</span>':'')+'</summary><div class="panel-body">'+s+'</div></details>';
+}
+function rm(key){
+var mod=DATA[key];
+var sb=document.getElementById('sidebar');
+var ct=document.getElementById('content');
+var gh='',ch='';
+mod.groups.forEach(function(g){
+gh+='<div class="tree-group"><div class="tree-group-title">'+esc(g.name)+'</div><ul class="tree-list">';
+ch+='<div class="content-group"><h3 class="group-header">'+esc(g.name)+'</h3>';
+g.items.forEach(function(it){
+gh+='<li><a href="#'+esc(it.id)+'" class="tree-link">'+esc(it.name)+'</a></li>';
+ch+=ri(it);
+});
+gh+='</ul></div>';
+ch+='</div>';
+});
+sb.innerHTML=gh;
+ct.innerHTML='<div class="module-header"><h2>'+esc(mod.title)+' <span style="font-size:14px;color:var(--muted);font-weight:400">'+esc(mod.subtitle)+'</span></h2><div class="meta">'+mod.count+mod.unit+'</div></div>'+ch;
+filterSearch();
+}
+var currentModule='backend';
+function filterSearch(){
+var q=(document.getElementById('searchInput').value||'').toLowerCase().trim();
+var panels=document.querySelectorAll('.class-panel');
+var links=document.querySelectorAll('.tree-link');
+var visibleCount=0;
+panels.forEach(function(p){
+var name=p.getAttribute('data-name')||'';
+var match=q===''||name.indexOf(q)>=0;
+p.classList.toggle('hidden-by-search',!match);
+if(match)visibleCount++;
+});
+links.forEach(function(l){
+var txt=(l.textContent||'').toLowerCase();
+var match=q===''||txt.indexOf(q)>=0;
+l.classList.toggle('hidden-by-search',!match);
+});
+var nr=document.getElementById('noResults');
+if(nr)nr.remove();
+if(visibleCount===0&&q!==''){
+var ct=document.getElementById('content');
+var d=document.createElement('div');
+d.id='noResults';d.className='no-results';
+d.textContent='没有找到匹配 "'+q+'" 的类';
+ct.appendChild(d);
+}
+}
+document.querySelectorAll('.nav-tab').forEach(function(tab){
+tab.addEventListener('click',function(){
+document.querySelectorAll('.nav-tab').forEach(function(t){t.classList.remove('active')});
+this.classList.add('active');
+currentModule=this.getAttribute('data-module');
+document.getElementById('searchInput').value='';
+rm(currentModule);
+});
+});
+document.getElementById('searchInput').addEventListener('input',filterSearch);
+document.getElementById('sidebarToggle').addEventListener('click',function(){
+document.getElementById('sidebar').classList.toggle('open');
+document.getElementById('overlay').classList.toggle('show');
+});
+document.getElementById('overlay').addEventListener('click',function(){
+document.getElementById('sidebar').classList.remove('open');
+document.getElementById('overlay').classList.remove('show');
+});
+document.getElementById('sidebar').addEventListener('click',function(e){
+if(e.target.classList.contains('tree-link')){
+if(window.innerWidth<=768){
+document.getElementById('sidebar').classList.remove('open');
+document.getElementById('overlay').classList.remove('show');
+}
+}
+});
+rm('backend');
+</script>
+</body>
+</html>

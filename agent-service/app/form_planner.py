@@ -7,6 +7,7 @@ query tool calls for high-confidence matches.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from pydantic import BaseModel
@@ -299,6 +300,13 @@ def _walk(value: Any) -> list[Any]:
     elif isinstance(value, list):
         for child in value:
             items.extend(_walk(child))
+    elif isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            try:
+                items.extend(_walk(json.loads(stripped)))
+            except Exception:
+                pass
     return items
 
 

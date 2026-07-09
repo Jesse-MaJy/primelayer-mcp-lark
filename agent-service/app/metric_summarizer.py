@@ -12,6 +12,10 @@ from typing import Any
 from .models import DomainIntent
 
 
+CLOSED_STATUS_KEYWORDS = ("已完成", "已关闭", "已整改", "整改完成", "完成", "关闭", "合格", "通过", "已消除", "无需整改")
+OPEN_STATUS_KEYWORDS = ("待整改", "未整改", "逾期", "整改中", "进行中", "未完成", "未关闭", "open", "pending")
+
+
 def compute_quality_metrics(data: dict[str, Any]) -> dict[str, Any]:
     """Compute quality domain metrics from form data.
 
@@ -30,13 +34,14 @@ def compute_quality_metrics(data: dict[str, Any]) -> dict[str, Any]:
     total = data.get("total", len(items))
 
     status_counter: Counter = Counter()
+    status_class_counter: Counter = Counter()
     severity_counter: Counter = Counter()
     type_counter: Counter = Counter()
     responsible_counter: Counter = Counter()
     area_counter: Counter = Counter()
 
     for item in items:
-        status = item.get("status", "")
+        status = _clean_text(item.get("status", ""))
         severity = item.get("severity", "")
         item_type = item.get("type", "")
         responsible = item.get("responsiblePerson", "")
@@ -44,6 +49,7 @@ def compute_quality_metrics(data: dict[str, Any]) -> dict[str, Any]:
 
         if status:
             status_counter[status] += 1
+            status_class_counter[_quality_status_class(status)] += 1
         if severity:
             severity_counter[severity] += 1
         if item_type:
@@ -53,21 +59,20 @@ def compute_quality_metrics(data: dict[str, Any]) -> dict[str, Any]:
         if area:
             area_counter[area] += 1
 
-    # Unclosed = anything that is NOT "已完成" or "已关闭"
-    unclosed_count = sum(
-        count for status, count in status_counter.items()
-        if "已" not in status or status in ("待整改", "逾期未整改")
-    )
-
-    # More precise: unclosed = total - completed
-    completed_count = status_counter.get("已完成", 0) + status_counter.get("已关闭", 0)
-    unclosed_count = total - completed_count
+    known_status_count = sum(status_counter.values())
+    completed_count = status_class_counter.get("closed", 0)
+    unclosed_count = status_class_counter.get("open", 0)
+    ambiguous_status_count = status_class_counter.get("unknown", 0)
+    unknown_status_count = max(total - known_status_count, 0) + ambiguous_status_count
 
     high_severity_count = severity_counter.get("高", 0)
 
     return {
         "total_records": total,
         "unclosed_count": unclosed_count,
+        "completed_count": completed_count,
+        "known_status_count": known_status_count,
+        "unknown_status_count": unknown_status_count,
         "high_severity_count": high_severity_count,
         "status_distribution": dict(status_counter),
         "severity_distribution": dict(severity_counter),
@@ -75,6 +80,28 @@ def compute_quality_metrics(data: dict[str, Any]) -> dict[str, Any]:
         "responsible_distribution": dict(responsible_counter),
         "area_distribution": dict(area_counter),
     }
+
+
+def _clean_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        return "、".join(_clean_text(item) for item in value if _clean_text(item))
+    if isinstance(value, dict):
+        for key in ("text", "name", "label", "value"):
+            if key in value:
+                return _clean_text(value.get(key))
+        return ""
+    return str(value).strip()
+
+
+def _quality_status_class(status: str) -> str:
+    lower = status.lower()
+    if any(keyword.lower() in lower for keyword in CLOSED_STATUS_KEYWORDS):
+        return "closed"
+    if any(keyword.lower() in lower for keyword in OPEN_STATUS_KEYWORDS):
+        return "open"
+    return "unknown"
 
 
 def compute_safety_metrics(data: dict[str, Any]) -> dict[str, Any]:
@@ -320,9 +347,11 @@ def _build_conclusion(domain: str, metrics: dict[str, Any], label: str) -> str:
         total = metrics.get("total_records", 0)
         unclosed = metrics.get("unclosed_count", 0)
         high = metrics.get("high_severity_count", 0)
+        completed = metrics.get("completed_count", 0)
+        known = metrics.get("known_status_count", 0)
         if unclosed > 0:
-            return f"本次共查询到{total}条{label}记录，其中未整改完结{unclosed}条（含高严重度{high}条），需重点关注及时整改。"
-        return f"本次共查询到{total}条{label}记录，当前无未整改问题，{label}状态良好。"
+            return f"本次共查询到{total}条{label}记录；在{known}条可识别状态的记录中，未整改完结{unclosed}条、已完成{completed}条（高严重度{high}条）。"
+        return f"本次共查询到{total}条{label}记录；在{known}条可识别状态的记录中，未发现未整改问题。"
     elif domain == "safety":
         total = metrics.get("total_records", 0)
         high = metrics.get("high_risk_count", 0)
@@ -355,10 +384,15 @@ def _build_key_metrics(domain: str, metrics: dict[str, Any]) -> list[str]:
         total = metrics.get("total_records", 0)
         unclosed = metrics.get("unclosed_count", 0)
         high = metrics.get("high_severity_count", 0)
-        closed = total - unclosed
+        closed = metrics.get("completed_count", 0)
+        known = metrics.get("known_status_count", 0)
+        unknown = metrics.get("unknown_status_count", 0)
         lines.append(f"  - 记录总数：{total}")
+        lines.append(f"  - 状态字段覆盖：{known}/{total} 条")
         lines.append(f"  - 未整改（含逾期）：{unclosed} 条")
         lines.append(f"  - 已完成整改：{closed} 条")
+        if unknown:
+            lines.append(f"  - 状态未识别/缺失：{unknown} 条")
         lines.append(f"  - 高严重度：{high} 条")
         # Status distribution
         status_dist = metrics.get("status_distribution", {})

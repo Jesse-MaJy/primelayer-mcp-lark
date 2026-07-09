@@ -7,6 +7,7 @@ MetricSummarizer) are correctly wired into agent_graph.py.
 
 import pytest
 
+import app.agent_graph as agent_graph
 from app.agent_graph import run_agent
 from app.models import AgentAnswerRequest, ProjectRef, ToolDefinition, UserContext
 
@@ -232,9 +233,239 @@ def test_domain_workflow_with_query_form_data_tool_results():
         )
     )
     assert response is not None
-    # With tool results already present, toolCalls should be empty (entering summarization)
-    # or the answer should be populated
-    assert len(response.toolCalls) == 0 or response.answer is not None
+    # With list data and a detail tool available, the workflow may enrich
+    # records before producing the final summary.
+    if response.toolCalls:
+        assert response.toolCalls[0].toolName == "batch_get_form_value_detail"
+    else:
+        assert response.answer is not None
+
+
+def test_quality_match_results_continue_to_form_data_queries_with_pagination():
+    """After matching quality forms, the next round should query last month's form data."""
+    response = run_agent(
+        _make_request(
+            "罗诊项目上个月质量情况",
+            projects=[
+                ProjectRef(projectId="roche", projectName="罗氏诊断项目"),
+            ],
+            tool_results=[
+                {
+                    "projectId": "roche",
+                    "projectName": "罗氏诊断项目",
+                    "toolName": "match_form_resource",
+                    "status": "SUCCEEDED",
+                    "arguments": {"name": "质量"},
+                    "result": {
+                        "content": [
+                            {
+                                "text": "{\"data\":[{\"formId\":\"quality_defects\",\"formName\":\"质量缺陷清单\",\"matchScore\":0.95},{\"formId\":\"quality_focus\",\"formName\":\"重点质量关注项\",\"matchScore\":0.85}]}"
+                            }
+                        ]
+                    },
+                }
+            ],
+        )
+    )
+
+    query_calls = [tc for tc in response.toolCalls if tc.toolName == "query_form_data_list"]
+    assert response.answer is None
+    assert len(query_calls) == 2
+    for tc in query_calls:
+        assert tc.pagination is not None
+        assert tc.pagination["mode"] == "auto"
+        assert tc.pagination["pageSize"] == 100
+        assert tc.arguments["pageSize"] == 100
+        assert tc.arguments["filter"]["createTime"] == [
+            "2026-06-01 00:00:00",
+            "2026-06-30 23:59:59",
+        ]
+
+
+def test_tool_planning_records_relevance_scores_and_deepseek_review(monkeypatch):
+    """Every planning round should score candidates and ask the model to review them."""
+    review_calls = []
+
+    def fake_model_review(request, candidates, proposed_calls):
+        review_calls.append((request.question, candidates, proposed_calls))
+        return {
+            "reviewer": "deepseek",
+            "selectedToolNames": [call.toolName for call in proposed_calls],
+            "reasoningSummary": "质量问题需要先发现质量表单，再查询表单数据。",
+        }
+
+    monkeypatch.setattr(agent_graph, "_model_review_tool_selection", fake_model_review, raising=False)
+
+    response = run_agent(
+        _make_request(
+            "罗诊项目上个月质量情况",
+            projects=[
+                ProjectRef(projectId="roche", projectName="罗氏诊断项目"),
+            ],
+        )
+    )
+
+    assert review_calls
+    selection = response.answerMetadata.get("toolSelection")
+    assert selection is not None
+    assert selection["modelReview"]["reviewer"] == "deepseek"
+    assert selection["candidateScores"]
+    assert all("score" in item for item in selection["candidateScores"])
+    assert any("DeepSeek复核" in (call.reason or "") for call in response.toolCalls)
+
+
+def test_project_report_quality_query_results_use_domain_summary():
+    """Project-report routed quality data should produce a metric report, not raw JSON dumps."""
+    response = run_agent(
+        _make_request(
+            "罗诊项目上个月质量情况",
+            projects=[
+                ProjectRef(projectId="roche", projectName="罗氏诊断项目"),
+            ],
+            available_tools=[
+                ToolDefinition(name="match_form_resource", description="匹配表单", inputSchema={}),
+                ToolDefinition(name="query_form_data_list", description="查询表单数据", inputSchema={}),
+                ToolDefinition(name="get_base_form_info", description="获取表单基础信息", inputSchema={}),
+            ],
+            tool_results=[
+                {
+                    "projectId": "roche",
+                    "projectName": "罗氏诊断项目",
+                    "toolName": "query_form_data_list",
+                    "status": "SUCCEEDED",
+                    "formName": "质量缺陷清单",
+                    "arguments": {"formId": "quality_defects"},
+                    "result": {
+                        "data": {
+                            "total": 2,
+                            "items": [
+                                {
+                                    "dataId": "d1",
+                                    "status": "待整改",
+                                    "severity": "高",
+                                    "type": "外观缺陷",
+                                    "responsiblePerson": "张三",
+                                    "area": "A区",
+                                },
+                                {
+                                    "dataId": "d2",
+                                    "status": "已完成",
+                                    "severity": "中",
+                                    "type": "尺寸偏差",
+                                    "responsiblePerson": "李四",
+                                    "area": "B区",
+                                },
+                            ],
+                        }
+                    },
+                }
+            ],
+        )
+    )
+
+    assert response.answer is not None
+    assert "关键指标" in response.answer
+    assert "记录总数：2" in response.answer
+    assert "query_form_data_list" not in response.answer
+
+
+def test_detail_only_quality_results_are_summarized_without_raw_json():
+    """Detail tool results should be normalized into a quality report instead of raw payload text."""
+    response = run_agent(
+        _make_request(
+            "罗诊项目上个月质量情况",
+            projects=[
+                ProjectRef(projectId="roche", projectName="罗氏诊断项目"),
+            ],
+            available_tools=[
+                ToolDefinition(name="match_form_resource", description="匹配表单", inputSchema={}),
+                ToolDefinition(name="query_form_data_list", description="查询表单数据", inputSchema={}),
+                ToolDefinition(name="batch_get_form_value_detail", description="获取详情", inputSchema={}),
+            ],
+            tool_results=[
+                {
+                    "projectId": "roche",
+                    "projectName": "罗氏诊断项目",
+                    "toolName": "batch_get_form_value_detail",
+                    "status": "SUCCEEDED",
+                    "formName": "质量缺陷清单",
+                    "arguments": {"formId": "quality_defects", "dataIdList": ["d1"]},
+                    "result": {
+                        "content": [
+                            {
+                                "text": "{\"data\":[{\"dataId\":\"d1\",\"createTime\":\"2026-06-01 14:19:28\",\"creator\":\"Kirsi Deng 邓科\",\"detailList\":[{\"fieldName\":\"问题描述\",\"fieldValue\":\"AMEFS 罗氏诊断产品建设体外诊断试剂及体外诊断仪器生产项目质量缺陷\"},{\"fieldName\":\"整改状态\",\"fieldValue\":\"待整改\"},{\"fieldName\":\"严重程度\",\"fieldValue\":\"高\"},{\"fieldName\":\"责任人\",\"fieldValue\":\"张三\"}]}]}"
+                            }
+                        ]
+                    },
+                }
+            ],
+        )
+    )
+
+    assert response.answer is not None
+    assert "关键指标" in response.answer
+    assert "记录总数：1" in response.answer
+    assert "batch_get_form_value_detail" not in response.answer
+    assert "content" not in response.answer
+    assert "detailList" not in response.answer
+
+
+def test_quality_summary_uses_status_from_form_values():
+    """query_form_data_list 的 formValues 状态字段应参与已完成/未整改统计。"""
+    response = run_agent(
+        _make_request(
+            "罗诊项目上个月质量情况",
+            projects=[
+                ProjectRef(projectId="roche", projectName="罗氏诊断项目"),
+            ],
+            available_tools=[
+                ToolDefinition(name="match_form_resource", description="匹配表单", inputSchema={}),
+                ToolDefinition(name="query_form_data_list", description="查询表单数据", inputSchema={}),
+            ],
+            tool_results=[
+                {
+                    "projectId": "roche",
+                    "projectName": "罗氏诊断项目",
+                    "toolName": "query_form_data_list",
+                    "status": "SUCCEEDED",
+                    "formName": "质量缺陷清单",
+                    "arguments": {"formId": "quality_defects"},
+                    "result": {
+                        "data": {
+                            "total": 3,
+                            "items": [
+                                {
+                                    "dataId": "d1",
+                                    "formValues": [
+                                        {"fieldName": "整改状态", "fieldValue": "待整改"},
+                                        {"fieldName": "严重程度", "fieldValue": "高"},
+                                    ],
+                                },
+                                {
+                                    "dataId": "d2",
+                                    "formValues": [
+                                        {"fieldName": "整改状态", "fieldValue": "已完成"},
+                                        {"fieldName": "严重程度", "fieldValue": "低"},
+                                    ],
+                                },
+                                {
+                                    "dataId": "d3",
+                                    "formValues": [
+                                        {"fieldName": "整改状态", "fieldValue": "已整改"},
+                                    ],
+                                },
+                            ],
+                        }
+                    },
+                }
+            ],
+        )
+    )
+
+    assert response.answer is not None
+    assert "未整改（含逾期）：1 条" in response.answer
+    assert "已完成整改：2 条" in response.answer
+    assert "状态字段覆盖：3/3 条" in response.answer
 
 
 def test_domain_workflow_handles_failed_tool_results():

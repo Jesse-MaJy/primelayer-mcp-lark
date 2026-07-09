@@ -19,7 +19,7 @@ public class IntentRouter {
             return new IntentRoute(IntentCategory.REPORT, "weekly_report", "项目报告", "blue", true);
         }
         if (containsAny(text,
-                "primelayer", "mcp", "项目", "待办", "任务", "风险", "逾期", "进度", "健康度", "负责人", "验收", "施工",
+                "primelayer", "mcp", "项目", "待办", "任务", "风险", "逾期", "进度", "健康度", "负责人", "验收", "施工","质量", "安全", "隐患", "检查",
                 "task", "project", "risk", "progress")) {
             return new IntentRoute(IntentCategory.PROJECT_QUERY, "project_query", "项目查询", "blue", true);
         }
