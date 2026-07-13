@@ -17,6 +17,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.inOrder;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class AgentOrchestratorTest {
@@ -33,13 +34,19 @@ class AgentOrchestratorTest {
         orchestrator(tasks, unified, feishu, audit, traces).process("r1");
 
         verify(unified).query(new UnifiedQueryService.QueryRequest("r1", "分析 Roche 本月质量风险", "p2p", "u1", "c1"));
-        verify(feishu).replyAnswerCard("m1", "分析 Roche 本月质量风险", "风险分析完成", "项目数据分析", "blue");
+        verify(feishu).replyAnswerFeedbackCard(
+                "m1", "r1", "分析 Roche 本月质量风险", "风险分析完成", "项目数据分析", "blue");
         verify(traces).save(eq("r1"), any());
         verify(audit).writeModel(eq("r1"), eq("deepseek-v4-pro"), eq("mcp_deepseek"),
                 argThat(summary -> summary.contains("physicalMcpCalls=2")
                         && summary.contains("pages=2")
                         && summary.contains("inputTokens=20")),
                 eq("风险分析完成"), eq("SUCCEEDED"), eq(100L), eq(null));
+        var order = inOrder(audit, feishu);
+        order.verify(audit).writeMain(eq("r1"), eq("u1"), eq("c1"), eq(null), eq(List.of("P1")),
+                eq("分析 Roche 本月质量风险"), eq("mcp_deepseek"), eq("风险分析完成"), any(Long.class), eq(null));
+        order.verify(feishu).replyAnswerFeedbackCard(
+                "m1", "r1", "分析 Roche 本月质量风险", "风险分析完成", "项目数据分析", "blue");
     }
 
     @Test

@@ -62,6 +62,22 @@
             <a-tag v-else>工具 0</a-tag>
           </a-space>
         </template>
+        <template v-else-if="column.key === 'feedback'">
+          <a-space :size="4" wrap>
+            <a-tag color="green">有帮助 {{ record.helpful_count ?? 0 }}</a-tag>
+            <a-tag :color="Number(record.problem_count || 0) > 0 ? 'red' : 'default'">
+              有问题 {{ record.problem_count ?? 0 }}
+            </a-tag>
+            <a-button
+              v-if="Number(record.feedback_count || 0) > 0"
+              type="link"
+              size="small"
+              @click.stop="openFeedback(record)"
+            >
+              查看
+            </a-button>
+          </a-space>
+        </template>
       </template>
 
       <template #expandedRowRender="{ record }">
@@ -81,6 +97,22 @@
           <div>
             <div class="detail-label">排查信息</div>
             <pre>{{ diagnosticText(record) }}</pre>
+          </div>
+          <div>
+            <div class="detail-label">回答反馈</div>
+            <a-space wrap>
+              <a-tag color="green">有帮助 {{ record.helpful_count ?? 0 }}</a-tag>
+              <a-tag :color="Number(record.problem_count || 0) > 0 ? 'red' : 'default'">
+                有问题 {{ record.problem_count ?? 0 }}
+              </a-tag>
+              <a-button
+                v-if="Number(record.feedback_count || 0) > 0"
+                type="link"
+                size="small"
+                @click="openFeedback(record)"
+              >查看反馈明细</a-button>
+              <span v-else class="muted">暂无用户反馈</span>
+            </a-space>
           </div>
           <div style="grid-column: 1 / -1; text-align: center; padding-top: 8px">
             <a-button type="primary" ghost size="small" @click="openTrace(record.request_id)">
@@ -151,6 +183,46 @@
       </a-spin>
     </a-drawer>
 
+    <a-drawer
+      :open="feedbackDrawerOpen"
+      title="AI 回答反馈"
+      placement="right"
+      :width="720"
+      @close="feedbackDrawerOpen = false"
+    >
+      <a-spin :spinning="feedbackLoading" style="display: block">
+        <a-alert
+          v-if="feedbackError"
+          type="error"
+          :message="feedbackError"
+          show-icon
+          style="margin-bottom: 16px"
+        />
+        <a-empty v-else-if="!feedbackLoading && feedbackRows.length === 0" description="暂无用户反馈" />
+        <a-list v-else :data-source="feedbackRows" item-layout="vertical">
+          <template #renderItem="{ item }">
+            <a-list-item>
+              <a-list-item-meta>
+                <template #title>
+                  <a-space>
+                    <span>{{ item.personName || item.feishuOpenId || '-' }}</span>
+                    <a-tag :color="item.rating === 'HELPFUL' ? 'green' : 'red'">
+                      {{ item.rating === 'HELPFUL' ? '有帮助' : '有问题' }}
+                    </a-tag>
+                    <a-tag v-if="item.reasonLabel">{{ item.reasonLabel }}</a-tag>
+                  </a-space>
+                </template>
+                <template #description>
+                  {{ item.feishuOpenId }} · {{ formatChinaDateTime(item.updatedAt) }}
+                </template>
+              </a-list-item-meta>
+              <pre v-if="item.detail" class="feedback-detail">{{ item.detail }}</pre>
+            </a-list-item>
+          </template>
+        </a-list>
+      </a-spin>
+    </a-drawer>
+
     <!-- Node detail modal -->
     <a-modal v-model:open="nodeModalOpen" title="节点详情" :footer="null" width="800px">
       <a-tabs>
@@ -175,7 +247,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, nextTick } from 'vue'
 import { message } from 'ant-design-vue'
-import { adminApi } from '../api/admin'
+import { adminApi, type AnswerFeedbackDetail } from '../api/admin'
 import { formatChinaDateTime } from '../utils/time'
 
 const rows = ref<Record<string, unknown>[]>([])
@@ -189,6 +261,7 @@ const columns = ref([
   { title: '问题', dataIndex: 'message_text', key: 'message_text', width: 240, resizable: true, minWidth: 80, maxWidth: 800 },
   { title: 'Intent', dataIndex: 'intent', width: 140, resizable: true, minWidth: 80, maxWidth: 400 },
   { title: '调用', key: 'counts', width: 150, resizable: true, minWidth: 80, maxWidth: 400 },
+  { title: '反馈', key: 'feedback', width: 210, resizable: true, minWidth: 150, maxWidth: 400 },
   { title: '耗时', dataIndex: 'latency_ms', width: 90, resizable: true, minWidth: 60, maxWidth: 200, customRender: ({ text }: { text: unknown }) => text == null ? '-' : `${text} ms` },
   { title: '回答', dataIndex: 'final_answer', key: 'final_answer', width: 300, resizable: true, minWidth: 80, maxWidth: 1000 }
 ])
@@ -213,6 +286,11 @@ const nodeModalOpen = ref(false)
 const detailInput = ref('')
 const detailOutput = ref('')
 const detailMeta = ref<Record<string, unknown>>({})
+
+const feedbackDrawerOpen = ref(false)
+const feedbackLoading = ref(false)
+const feedbackError = ref('')
+const feedbackRows = ref<AnswerFeedbackDetail[]>([])
 
 function onResizeColumn(width: number, column: { width?: number }) {
   column.width = width
@@ -247,6 +325,20 @@ async function openTrace(requestId: unknown) {
     traceError.value = e?.message || '加载链调数据失败'
   } finally {
     traceLoading.value = false
+  }
+}
+
+async function openFeedback(record: Record<string, unknown>) {
+  feedbackDrawerOpen.value = true
+  feedbackLoading.value = true
+  feedbackError.value = ''
+  feedbackRows.value = []
+  try {
+    feedbackRows.value = await adminApi.listMessageFeedback(String(record.request_id || ''))
+  } catch (error) {
+    feedbackError.value = error instanceof Error ? error.message : '加载反馈明细失败'
+  } finally {
+    feedbackLoading.value = false
   }
 }
 
@@ -342,6 +434,8 @@ onMounted(loadRows)
 .clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: normal }
 .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px }
 .detail-label { font-weight: 600; margin-bottom: 6px }
+.muted { color: #98a2b3 }
+.feedback-detail { max-height: 180px }
 pre { margin: 0; white-space: pre-wrap; word-break: break-word; background: #f7f8fa; border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px; max-height: 260px; overflow: auto }
 .json-block { background: #f5f5f5; padding: 16px; border-radius: 4px; max-height: 500px; overflow: auto; white-space: pre-wrap; word-break: break-all; font-size: 12px; line-height: 1.5; margin: 0 }
 @media (max-width: 900px) { .detail-grid { grid-template-columns: 1fr } }

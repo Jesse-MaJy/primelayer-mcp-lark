@@ -112,6 +112,12 @@ public class FeishuClient {
         replyCard(messageId, buildAnswerCard(question, answer, title, template, metrics, visualElements));
     }
 
+    public void replyAnswerFeedbackCard(String messageId, String requestId, String question, String answer,
+                                        String title, String template) {
+        replyCard(messageId, buildAnswerFeedbackCard(
+                requestId, question, answer, title, template, AnswerFeedbackView.initial()));
+    }
+
     public void replyWelcomeCard(String messageId) {
         replyCard(messageId, buildWelcomeCard());
     }
@@ -180,6 +186,34 @@ public class FeishuClient {
             List<CardMetric> metrics,
             List<Map<String, Object>> visualElements
     ) {
+        return buildAnswerCard(question, answer, title, template, metrics, visualElements, null, null);
+    }
+
+    public Map<String, Object> buildAnswerFeedbackCard(
+            String requestId,
+            String question,
+            String answer,
+            String title,
+            String template,
+            AnswerFeedbackView feedbackView
+    ) {
+        if (!hasText(requestId)) {
+            throw new IllegalArgumentException("requestId 不能为空");
+        }
+        return buildAnswerCard(question, answer, title, template, List.of(), List.of(), requestId,
+                feedbackView == null ? AnswerFeedbackView.initial() : feedbackView);
+    }
+
+    private Map<String, Object> buildAnswerCard(
+            String question,
+            String answer,
+            String title,
+            String template,
+            List<CardMetric> metrics,
+            List<Map<String, Object>> visualElements,
+            String requestId,
+            AnswerFeedbackView feedbackView
+    ) {
         String generatedAt = LocalDateTime.now().format(CARD_TIME_FORMATTER);
         String cardTitle = hasText(title) ? title : DEFAULT_AI_TITLE;
         List<Object> elements = new ArrayList<>();
@@ -192,19 +226,114 @@ public class FeishuClient {
             elements.add(Map.of("tag", "hr"));
             elements.addAll(visualElements);
         }
+        if (feedbackView != null) {
+            elements.add(Map.of("tag", "hr"));
+            elements.addAll(feedbackElements(requestId, feedbackView));
+        }
         elements.add(Map.of("tag", "hr"));
         elements.add(noteBlock("由 Primelayer AI 生成 · " + generatedAt + " · " + CARD_SCHEMA_VERSION));
+        Map<String, Object> config = new java.util.LinkedHashMap<>();
+        config.put("wide_screen_mode", true);
+        config.put("enable_forward", true);
+        if (feedbackView != null) {
+            config.put("update_multi", false);
+        }
         return Map.of(
-                "config", Map.of(
-                        "wide_screen_mode", true,
-                        "enable_forward", true
-                ),
+                "config", config,
                 "header", Map.of(
                         "title", Map.of("tag", "plain_text", "content", cardTitle),
                         "template", hasText(template) ? template : "blue"
                 ),
                 "elements", elements
         );
+    }
+
+    private List<Object> feedbackElements(String requestId, AnswerFeedbackView view) {
+        return switch (view.state()) {
+            case INITIAL -> List.of(
+                    markdownBlock("**这个回答对你有帮助吗？**"),
+                    actionBlock(List.of(
+                            buttonAction("👍 有帮助", "feedback_helpful", "primary", Map.of("request_id", requestId)),
+                            buttonAction("⚠️ 有问题", "feedback_problem", "default", Map.of("request_id", requestId))
+                    ))
+            );
+            case REASONS -> List.of(
+                    markdownBlock("**请选择问题原因**"),
+                    actionBlock(List.of(
+                            feedbackReasonButton("数据不准确", "DATA_INACCURATE", requestId),
+                            feedbackReasonButton("答非所问", "OFF_TOPIC", requestId),
+                            feedbackReasonButton("内容不完整", "INCOMPLETE", requestId),
+                            buttonAction("其他", "feedback_other_form", "default", Map.of("request_id", requestId))
+                    )),
+                    actionBlock(List.of(buttonAction("返回", "feedback_edit", "default", Map.of("request_id", requestId))))
+            );
+            case OTHER_FORM -> List.of(
+                    markdownBlock("**请说明具体问题**"),
+                    otherFeedbackForm(requestId),
+                    actionBlock(List.of(buttonAction(
+                            "返回原因", "feedback_back_reasons", "default", Map.of("request_id", requestId))))
+            );
+            case SUBMITTED -> submittedFeedbackElements(requestId, view);
+        };
+    }
+
+    private List<Object> submittedFeedbackElements(String requestId, AnswerFeedbackView view) {
+        List<Object> elements = new ArrayList<>();
+        elements.add(markdownBlock("**" + submittedLabel(view) + "**"));
+        if (hasText(view.detail())) {
+            elements.add(noteBlock("说明：" + safeText(view.detail())));
+        }
+        elements.add(actionBlock(List.of(buttonAction(
+                "修改评价", "feedback_edit", "default", Map.of("request_id", requestId)))));
+        return elements;
+    }
+
+    private Map<String, Object> feedbackReasonButton(String label, String reasonCode, String requestId) {
+        return buttonAction(label, "feedback_reason", "default", Map.of(
+                "request_id", requestId,
+                "reason_code", reasonCode
+        ));
+    }
+
+    private Map<String, Object> otherFeedbackForm(String requestId) {
+        Map<String, Object> submit = new java.util.LinkedHashMap<>(buttonAction(
+                "提交反馈", "feedback_other_submit", "primary", Map.of("request_id", requestId)));
+        submit.put("name", "feedback_submit");
+        submit.put("complex_interaction", true);
+        submit.put("action_type", "form_submit");
+        return Map.of(
+                "tag", "form",
+                "name", "feedback_form",
+                "elements", List.of(
+                        Map.of(
+                                "tag", "input",
+                                "name", "feedback_detail",
+                                "required", true,
+                                "input_type", "multiline_text",
+                                "rows", 3,
+                                "max_length", 500,
+                                "placeholder", Map.of("tag", "plain_text", "content", "请输入具体问题（最多 500 字）"),
+                                "fallback", Map.of("tag", "fallback_text", "text", Map.of(
+                                        "tag", "plain_text", "content", "请升级飞书后提交文字反馈"
+                                ))
+                        ),
+                        actionBlock(List.of(submit))
+                )
+        );
+    }
+
+    private String submittedLabel(AnswerFeedbackView view) {
+        if ("HELPFUL".equals(view.rating())) {
+            return "已记录：有帮助";
+        }
+        String reason = switch (view.reasonCode() == null ? "" : view.reasonCode()) {
+            case "DATA_INACCURATE" -> "数据不准确";
+            case "OFF_TOPIC" -> "答非所问";
+            case "INCOMPLETE" -> "内容不完整";
+            case "OTHER" -> "其他";
+            default -> "有问题";
+        };
+        return "已记录：有问题 · " + reason;
     }
 
     private Map<String, Object> buildQuestionPromptCard(String question) {
@@ -454,4 +583,29 @@ public class FeishuClient {
     private record TenantToken(String token, long expiresAtMillis) {}
 
     public record CardMetric(String label, String value) {}
+
+    public record AnswerFeedbackView(FeedbackState state, String rating, String reasonCode, String detail) {
+        public static AnswerFeedbackView initial() {
+            return new AnswerFeedbackView(FeedbackState.INITIAL, null, null, null);
+        }
+
+        public static AnswerFeedbackView reasons() {
+            return new AnswerFeedbackView(FeedbackState.REASONS, null, null, null);
+        }
+
+        public static AnswerFeedbackView otherForm() {
+            return new AnswerFeedbackView(FeedbackState.OTHER_FORM, null, "OTHER", null);
+        }
+
+        public static AnswerFeedbackView submitted(String rating, String reasonCode, String detail) {
+            return new AnswerFeedbackView(FeedbackState.SUBMITTED, rating, reasonCode, detail);
+        }
+    }
+
+    public enum FeedbackState {
+        INITIAL,
+        REASONS,
+        OTHER_FORM,
+        SUBMITTED
+    }
 }

@@ -3,6 +3,7 @@ package com.larkconnect.agent.admin;
 import com.larkconnect.agent.ai.AiRuntimeConfigService;
 import com.larkconnect.agent.audit.ChainTraceService;
 import com.larkconnect.agent.common.ApiResponse;
+import com.larkconnect.agent.feishu.AnswerFeedbackRepository;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -21,11 +22,14 @@ public class AdminController {
     private final AdminService adminService;
     private final AiRuntimeConfigService aiRuntimeConfigService;
     private final ChainTraceService chainTraceService;
+    private final AnswerFeedbackRepository answerFeedbackRepository;
 
-    public AdminController(AdminService adminService, AiRuntimeConfigService aiRuntimeConfigService, ChainTraceService chainTraceService) {
+    public AdminController(AdminService adminService, AiRuntimeConfigService aiRuntimeConfigService,
+                           ChainTraceService chainTraceService, AnswerFeedbackRepository answerFeedbackRepository) {
         this.adminService = adminService;
         this.aiRuntimeConfigService = aiRuntimeConfigService;
         this.chainTraceService = chainTraceService;
+        this.answerFeedbackRepository = answerFeedbackRepository;
     }
 
     @PostMapping("/login")
@@ -84,6 +88,11 @@ public class AdminController {
     @GetMapping("/feishu-messages")
     public ApiResponse<List<Map<String, Object>>> listFeishuMessages() {
         return ApiResponse.ok(adminService.listFeishuMessages());
+    }
+
+    @GetMapping("/feishu-messages/{requestId}/feedback")
+    public ApiResponse<List<AnswerFeedbackRepository.FeedbackDetail>> listMessageFeedback(@PathVariable String requestId) {
+        return ApiResponse.ok(answerFeedbackRepository.listDetails(requestId));
     }
 
     @GetMapping("/ai-settings")

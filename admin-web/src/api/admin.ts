@@ -10,6 +10,16 @@ export interface AiSettings {
   supportedModels: string[]
 }
 
+export interface AnswerFeedbackDetail {
+  feishuOpenId: string
+  personName?: string | null
+  rating: 'HELPFUL' | 'PROBLEM'
+  reasonCode?: string | null
+  reasonLabel?: string | null
+  detail?: string | null
+  updatedAt: string
+}
+
 export const adminApi = {
   login: (payload: { username: string; password: string }) =>
     http.post<unknown, LoginResponse>('/api/admin/login', payload),
@@ -24,6 +34,8 @@ export const adminApi = {
   listAuditLogs: () => http.get<unknown, Record<string, unknown>[]>('/api/admin/audit-logs'),
   listAgentTasks: () => http.get<unknown, Record<string, unknown>[]>('/api/admin/agent-tasks'),
   listFeishuMessages: () => http.get<unknown, Record<string, unknown>[]>('/api/admin/feishu-messages'),
+  listMessageFeedback: (requestId: string) =>
+    http.get<unknown, AnswerFeedbackDetail[]>(`/api/admin/feishu-messages/${encodeURIComponent(requestId)}/feedback`),
   getAiSettings: () => http.get<unknown, AiSettings>('/api/admin/ai-settings'),
   saveAiSettings: (payload: Record<string, unknown>) => http.put<unknown, AiSettings>('/api/admin/ai-settings', payload),
   debugHealth: () => http.get<unknown, Record<string, unknown>>('/api/admin/debug/health'),

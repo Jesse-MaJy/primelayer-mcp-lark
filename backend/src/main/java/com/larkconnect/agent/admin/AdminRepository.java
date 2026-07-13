@@ -185,7 +185,10 @@ public class AdminRepository {
                   coalesce(mc.model_call_count, 0) as model_call_count,
                   coalesce(tc.tool_call_count, 0) as tool_call_count,
                   coalesce(tc.failed_tool_call_count, 0) as failed_tool_call_count,
-                  tn.tool_names
+                  tn.tool_names,
+                  coalesce(fb.helpful_count, 0) as helpful_count,
+                  coalesce(fb.problem_count, 0) as problem_count,
+                  coalesce(fb.feedback_count, 0) as feedback_count
                 from agent_task t
                 left join agent_audit_log a on a.request_id = t.request_id
                 left join user_binding ub on ub.feishu_open_id = t.feishu_open_id
@@ -207,6 +210,14 @@ public class AdminRepository {
                   from agent_tool_call_log
                   group by request_id
                 ) tn on tn.request_id = t.request_id
+                left join (
+                  select request_id,
+                         sum(case when rating = 'HELPFUL' then 1 else 0 end) as helpful_count,
+                         sum(case when rating = 'PROBLEM' then 1 else 0 end) as problem_count,
+                         count(*) as feedback_count
+                  from agent_answer_feedback
+                  group by request_id
+                ) fb on fb.request_id = t.request_id
                 order by t.id desc
                 limit 300
                 """);

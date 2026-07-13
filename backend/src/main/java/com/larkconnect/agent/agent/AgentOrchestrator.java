@@ -78,7 +78,6 @@ public class AgentOrchestrator {
             UnifiedQueryService.QueryResult result = unifiedQueryService.query(
                     new UnifiedQueryService.QueryRequest(requestId, question, chatType, openId, chatId));
             String title = "mcp_deepseek".equals(result.path()) ? "项目数据分析" : "DeepSeek 回答";
-            feishuClient.replyAnswerCard(messageId, question, result.answer(), title, "blue");
             auditService.writeModel(requestId, result.model(), result.path(),
                     auditSummary(result),
                     result.answer(), Status.SUCCEEDED, result.latencyMs(), null);
@@ -86,6 +85,7 @@ public class AgentOrchestrator {
                     result.path(), result.answer(), System.currentTimeMillis() - started,
                     result.failures().isEmpty() ? null : String.join("；", result.failures()));
             chainTraceService.save(requestId, traceFor(requestId, result));
+            feishuClient.replyAnswerFeedbackCard(messageId, requestId, question, result.answer(), title, "blue");
             return true;
         } catch (Exception e) {
             String error = readable(e);
