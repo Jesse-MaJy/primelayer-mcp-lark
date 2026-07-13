@@ -66,6 +66,33 @@ class FeishuClientFeedbackCardTest {
         assertEquals("feedback_edit", findAction(card, "修改评价").path("action").asText());
     }
 
+    @Test
+    void keepsAnswerAtTenThousandCharacters() {
+        String answer = "答".repeat(10_000);
+
+        JsonNode card = json(client.buildAnswerFeedbackCard(
+                "req-1", "问题", answer, "DeepSeek 回答", "blue",
+                FeishuClient.AnswerFeedbackView.initial()
+        ));
+
+        assertEquals("**回答**\n" + answer, findContentStartingWith(card, "**回答**\n"));
+    }
+
+    @Test
+    void truncatesAnswerAfterTenThousandCharacters() {
+        String answer = "答".repeat(10_001);
+
+        JsonNode card = json(client.buildAnswerFeedbackCard(
+                "req-1", "问题", answer, "DeepSeek 回答", "blue",
+                FeishuClient.AnswerFeedbackView.initial()
+        ));
+
+        assertEquals(
+                "**回答**\n" + "答".repeat(10_000) + "\n\n内容较长，已截断。",
+                findContentStartingWith(card, "**回答**\n")
+        );
+    }
+
     private JsonNode findAction(JsonNode root, String label) {
         JsonNode button = findButton(root, label);
         return button.isMissingNode() ? button : button.path("value");
@@ -101,6 +128,17 @@ class FeishuClientFeedbackCardTest {
         }
         for (JsonNode child : root) {
             String found = findTextTag(child, content);
+            if (!found.isEmpty()) return found;
+        }
+        return "";
+    }
+
+    private String findContentStartingWith(JsonNode root, String prefix) {
+        if (root.isObject() && root.path("content").asText().startsWith(prefix)) {
+            return root.path("content").asText();
+        }
+        for (JsonNode child : root) {
+            String found = findContentStartingWith(child, prefix);
             if (!found.isEmpty()) return found;
         }
         return "";

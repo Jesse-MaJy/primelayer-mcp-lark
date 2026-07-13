@@ -503,7 +503,7 @@ public class FeishuClient {
         if (!hasText(value)) {
             return "-";
         }
-        return value.length() <= 3000 ? value : value.substring(0, 3000) + "\n\n内容较长，已截断。";
+        return value.length() <= 10000 ? value : value.substring(0, 10000) + "\n\n内容较长，已截断。";
     }
 
     public Map<String, Object> checkTenantAccessToken() {
