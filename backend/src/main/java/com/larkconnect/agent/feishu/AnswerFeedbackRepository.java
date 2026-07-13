@@ -23,7 +23,8 @@ public class AnswerFeedbackRepository {
     public Optional<AnswerContext> findAnswer(String requestId) {
         try {
             return Optional.ofNullable(jdbcTemplate.queryForObject("""
-                    select t.request_id, t.feishu_message_id, t.message_text, a.final_answer, a.intent
+                    select t.request_id, t.feishu_message_id, t.message_text, a.final_answer,
+                      a.presentation_json, a.intent
                     from agent_task t
                     join agent_audit_log a on a.request_id = t.request_id
                     where t.request_id = ?
@@ -37,6 +38,7 @@ public class AnswerFeedbackRepository {
                         rs.getString("feishu_message_id"),
                         rs.getString("message_text"),
                         rs.getString("final_answer"),
+                        rs.getString("presentation_json"),
                         title,
                         "blue"
                 );
@@ -151,7 +153,12 @@ public class AnswerFeedbackRepository {
     }
 
     public record AnswerContext(String requestId, String messageId, String question, String answer,
-                                String title, String template) {}
+                                String presentationJson, String title, String template) {
+        public AnswerContext(String requestId, String messageId, String question, String answer,
+                             String title, String template) {
+            this(requestId, messageId, question, answer, null, title, template);
+        }
+    }
 
     public record FeedbackWrite(String requestId, String openId, String rating, String reasonCode, String detail,
                                 String messageId, String eventId, long eventTime) {}

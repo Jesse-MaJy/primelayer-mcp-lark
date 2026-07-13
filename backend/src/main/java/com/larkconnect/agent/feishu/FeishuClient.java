@@ -3,14 +3,14 @@ package com.larkconnect.agent.feishu;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.larkconnect.agent.config.AppProperties;
+import com.larkconnect.agent.agent.AnswerPresentation;
 import com.larkconnect.agent.token.TokenResolver;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -19,17 +19,23 @@ import java.util.Map;
 public class FeishuClient {
     private static final Logger log = LoggerFactory.getLogger(FeishuClient.class);
     private static final String DEFAULT_AI_TITLE = "Primelayer AI 回答";
-    private static final String CARD_SCHEMA_VERSION = "primelayer-ai-card/v1";
-    private static final DateTimeFormatter CARD_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private final AppProperties properties;
     private final ObjectMapper objectMapper;
     private final RestClient restClient;
+    private final FeishuAnswerCardRenderer cardRenderer;
     private volatile TenantToken tenantToken;
 
-    public FeishuClient(AppProperties properties, ObjectMapper objectMapper, RestClient.Builder builder) {
+    @Autowired
+    public FeishuClient(AppProperties properties, ObjectMapper objectMapper, RestClient.Builder builder,
+                        FeishuAnswerCardRenderer cardRenderer) {
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.restClient = builder.baseUrl("https://open.feishu.cn").build();
+        this.cardRenderer = cardRenderer;
+    }
+
+    public FeishuClient(AppProperties properties, ObjectMapper objectMapper, RestClient.Builder builder) {
+        this(properties, objectMapper, builder, new FeishuAnswerCardRenderer());
     }
 
     public void sendText(String chatId, String text) {
@@ -62,6 +68,17 @@ public class FeishuClient {
         sendAnswerCard(chatId, question, answer, title, template, List.of(), List.of());
     }
 
+    public void sendAnswerCard(String chatId, String question, AnswerPresentation presentation,
+                               String title, String template) {
+        try {
+            sendCard("chat_id", chatId, cardRenderer.answerCard(null, question, presentation, title, template, null));
+        } catch (FeishuApiException e) {
+            if (!e.cardContentError()) throw e;
+            sendCard("chat_id", chatId,
+                    cardRenderer.markdownOnlyCard(question, presentation.plainText(), title, template));
+        }
+    }
+
     public void sendAnswerCard(
             String chatId,
             String question,
@@ -71,7 +88,12 @@ public class FeishuClient {
             List<CardMetric> metrics,
             List<Map<String, Object>> visualElements
     ) {
-        sendCard("chat_id", chatId, buildAnswerCard(question, answer, title, template, metrics, visualElements));
+        try {
+            sendCard("chat_id", chatId, buildAnswerCard(question, answer, title, template, metrics, visualElements));
+        } catch (FeishuApiException e) {
+            if (!e.cardContentError()) throw e;
+            sendCard("chat_id", chatId, cardRenderer.markdownOnlyCard(question, answer, title, template));
+        }
     }
 
     public void replyText(String messageId, String text) {
@@ -109,13 +131,34 @@ public class FeishuClient {
             List<CardMetric> metrics,
             List<Map<String, Object>> visualElements
     ) {
-        replyCard(messageId, buildAnswerCard(question, answer, title, template, metrics, visualElements));
+        try {
+            replyCard(messageId, buildAnswerCard(question, answer, title, template, metrics, visualElements));
+        } catch (FeishuApiException e) {
+            if (!e.cardContentError()) throw e;
+            replyCard(messageId, cardRenderer.markdownOnlyCard(question, answer, title, template));
+        }
     }
 
     public void replyAnswerFeedbackCard(String messageId, String requestId, String question, String answer,
                                         String title, String template) {
-        replyCard(messageId, buildAnswerFeedbackCard(
-                requestId, question, answer, title, template, AnswerFeedbackView.initial()));
+        replyPresentationWithFallback(messageId, requestId, question, AnswerPresentation.markdownOnly(answer),
+                title, template);
+    }
+
+    public void replyAnswerFeedbackCard(String messageId, String requestId, String question,
+                                        AnswerPresentation presentation, String title, String template) {
+        replyPresentationWithFallback(messageId, requestId, question, presentation, title, template);
+    }
+
+    private void replyPresentationWithFallback(String messageId, String requestId, String question,
+                                               AnswerPresentation presentation, String title, String template) {
+        try {
+            replyCard(messageId, buildAnswerFeedbackCard(
+                    requestId, question, presentation, title, template, AnswerFeedbackView.initial()));
+        } catch (FeishuApiException e) {
+            if (!e.cardContentError()) throw e;
+            replyCard(messageId, cardRenderer.markdownOnlyCard(question, presentation.plainText(), title, template));
+        }
     }
 
     public void replyWelcomeCard(String messageId) {
@@ -204,6 +247,19 @@ public class FeishuClient {
                 feedbackView == null ? AnswerFeedbackView.initial() : feedbackView);
     }
 
+    public Map<String, Object> buildAnswerFeedbackCard(
+            String requestId,
+            String question,
+            AnswerPresentation presentation,
+            String title,
+            String template,
+            AnswerFeedbackView feedbackView
+    ) {
+        if (!hasText(requestId)) throw new IllegalArgumentException("requestId 不能为空");
+        return cardRenderer.answerCard(requestId, question, presentation, title, template,
+                feedbackView == null ? AnswerFeedbackView.initial() : feedbackView);
+    }
+
     private Map<String, Object> buildAnswerCard(
             String question,
             String answer,
@@ -214,155 +270,23 @@ public class FeishuClient {
             String requestId,
             AnswerFeedbackView feedbackView
     ) {
-        String generatedAt = LocalDateTime.now().format(CARD_TIME_FORMATTER);
-        String cardTitle = hasText(title) ? title : DEFAULT_AI_TITLE;
-        List<Object> elements = new ArrayList<>();
-        elements.add(summaryFields(cardTitle, generatedAt, metrics));
-        elements.add(Map.of("tag", "hr"));
-        elements.add(markdownBlock("**问题**\n" + safeText(question)));
-        elements.add(Map.of("tag", "hr"));
-        elements.add(markdownBlock("**回答**\n" + safeText(answer)));
-        if (visualElements != null && !visualElements.isEmpty()) {
-            elements.add(Map.of("tag", "hr"));
-            elements.addAll(visualElements);
-        }
-        if (feedbackView != null) {
-            elements.add(Map.of("tag", "hr"));
-            elements.addAll(feedbackElements(requestId, feedbackView));
-        }
-        elements.add(Map.of("tag", "hr"));
-        elements.add(noteBlock("由 Primelayer AI 生成 · " + generatedAt + " · " + CARD_SCHEMA_VERSION));
-        Map<String, Object> config = new java.util.LinkedHashMap<>();
-        config.put("wide_screen_mode", true);
-        config.put("enable_forward", true);
-        if (feedbackView != null) {
-            config.put("update_multi", false);
-        }
-        return Map.of(
-                "config", config,
-                "header", Map.of(
-                        "title", Map.of("tag", "plain_text", "content", cardTitle),
-                        "template", hasText(template) ? template : "blue"
-                ),
-                "elements", elements
-        );
-    }
-
-    private List<Object> feedbackElements(String requestId, AnswerFeedbackView view) {
-        return switch (view.state()) {
-            case INITIAL -> List.of(
-                    markdownBlock("**这个回答对你有帮助吗？**"),
-                    actionBlock(List.of(
-                            buttonAction("👍 有帮助", "feedback_helpful", "primary", Map.of("request_id", requestId)),
-                            buttonAction("⚠️ 有问题", "feedback_problem", "default", Map.of("request_id", requestId))
-                    ))
-            );
-            case REASONS -> List.of(
-                    markdownBlock("**请选择问题原因**"),
-                    actionBlock(List.of(
-                            feedbackReasonButton("数据不准确", "DATA_INACCURATE", requestId),
-                            feedbackReasonButton("答非所问", "OFF_TOPIC", requestId),
-                            feedbackReasonButton("内容不完整", "INCOMPLETE", requestId),
-                            buttonAction("其他", "feedback_other_form", "default", Map.of("request_id", requestId))
-                    )),
-                    actionBlock(List.of(buttonAction("返回", "feedback_edit", "default", Map.of("request_id", requestId))))
-            );
-            case OTHER_FORM -> List.of(
-                    markdownBlock("**请说明具体问题**"),
-                    otherFeedbackForm(requestId),
-                    actionBlock(List.of(buttonAction(
-                            "返回原因", "feedback_back_reasons", "default", Map.of("request_id", requestId))))
-            );
-            case SUBMITTED -> submittedFeedbackElements(requestId, view);
-        };
-    }
-
-    private List<Object> submittedFeedbackElements(String requestId, AnswerFeedbackView view) {
-        List<Object> elements = new ArrayList<>();
-        elements.add(markdownBlock("**" + submittedLabel(view) + "**"));
-        if (hasText(view.detail())) {
-            elements.add(noteBlock("说明：" + safeText(view.detail())));
-        }
-        elements.add(actionBlock(List.of(buttonAction(
-                "修改评价", "feedback_edit", "default", Map.of("request_id", requestId)))));
-        return elements;
-    }
-
-    private Map<String, Object> feedbackReasonButton(String label, String reasonCode, String requestId) {
-        return buttonAction(label, "feedback_reason", "default", Map.of(
-                "request_id", requestId,
-                "reason_code", reasonCode
-        ));
-    }
-
-    private Map<String, Object> otherFeedbackForm(String requestId) {
-        Map<String, Object> submit = new java.util.LinkedHashMap<>(buttonAction(
-                "提交反馈", "feedback_other_submit", "primary", Map.of("request_id", requestId)));
-        submit.put("name", "feedback_submit");
-        submit.put("complex_interaction", true);
-        submit.put("action_type", "form_submit");
-        return Map.of(
-                "tag", "form",
-                "name", "feedback_form",
-                "elements", List.of(
-                        Map.of(
-                                "tag", "input",
-                                "name", "feedback_detail",
-                                "required", true,
-                                "input_type", "multiline_text",
-                                "rows", 3,
-                                "max_length", 500,
-                                "placeholder", Map.of("tag", "plain_text", "content", "请输入具体问题（最多 500 字）"),
-                                "fallback", Map.of("tag", "fallback_text", "text", Map.of(
-                                        "tag", "plain_text", "content", "请升级飞书后提交文字反馈"
-                                ))
-                        ),
-                        actionBlock(List.of(submit))
-                )
-        );
-    }
-
-    private String submittedLabel(AnswerFeedbackView view) {
-        if ("HELPFUL".equals(view.rating())) {
-            return "已记录：有帮助";
-        }
-        String reason = switch (view.reasonCode() == null ? "" : view.reasonCode()) {
-            case "DATA_INACCURATE" -> "数据不准确";
-            case "OFF_TOPIC" -> "答非所问";
-            case "INCOMPLETE" -> "内容不完整";
-            case "OTHER" -> "其他";
-            default -> "有问题";
-        };
-        return "已记录：有问题 · " + reason;
+        return cardRenderer.answerCard(requestId, question, AnswerPresentation.markdownOnly(safeText(answer)),
+                hasText(title) ? title : DEFAULT_AI_TITLE, hasText(template) ? template : "blue", feedbackView);
     }
 
     private Map<String, Object> buildQuestionPromptCard(String question) {
-        return Map.of(
-                "config", Map.of("wide_screen_mode", true, "enable_forward", true),
-                "header", Map.of(
-                        "title", Map.of("tag", "plain_text", "content", "Primelayer AI 预设问题"),
-                        "template", "blue"
-                ),
-                "elements", List.of(
+        return cardRenderer.card("Primelayer AI 预设问题", "blue", List.of(
                         markdownBlock("**请复制或直接发送下面的问题：**\n" + safeText(question)),
                         noteBlock("当前版本先提供问题入口；后续可升级为点击按钮后自动发起 Agent 查询。")
-                )
-        );
+                ));
     }
 
     private Map<String, Object> buildWelcomeCard() {
-        return Map.of(
-                "config", Map.of("wide_screen_mode", true, "enable_forward", true),
-                "header", Map.of(
-                        "title", Map.of("tag", "plain_text", "content", "Primelayer AI"),
-                        "template", "blue"
-                ),
-                "elements", List.of(
+        return cardRenderer.card("Primelayer AI", "blue", List.of(
                         markdownBlock("**欢迎使用 Primelayer AI**\n点击下方按钮检查你的 MCP 配置。配置正常后，我会给你推送项目入口卡。"),
                         actionBlock(List.of(buttonAction("开始使用 / 检查配置", "check_mcp_config", "primary", Map.of("source", "primelayer_ai_welcome")))),
                         noteBlock("不会在飞书内收集 MCP Token；Token 仍由管理员在后台维护。")
-                )
-        );
+                ));
     }
 
     private Map<String, Object> buildMcpRequiredCard(TokenResolver.McpConfigCheckResult result) {
@@ -370,13 +294,7 @@ public class FeishuClient {
         String openId = result == null ? "-" : result.openId();
         String ownerType = result == null || !hasText(result.ownerType()) ? "OPEN_ID" : result.ownerType();
         String ownerId = result == null || !hasText(result.ownerId()) ? openId : result.ownerId();
-        return Map.of(
-                "config", Map.of("wide_screen_mode", true, "enable_forward", true),
-                "header", Map.of(
-                        "title", Map.of("tag", "plain_text", "content", "需要绑定 MCP 配置"),
-                        "template", "red"
-                ),
-                "elements", List.of(
+        return cardRenderer.card("需要绑定 MCP 配置", "red", List.of(
                         markdownBlock("**当前还不能查询项目数据**\n" + safeText(reason)),
                         fieldBlock(List.of(
                                 shortField("**飞书 open_id**\n" + safeText(openId)),
@@ -385,8 +303,7 @@ public class FeishuClient {
                         Map.of("tag", "hr"),
                         markdownBlock("**管理员处理步骤**\n1. 打开后台「人员配置」。\n2. 选择当前飞书 open_id 或群 chat_id 作为绑定对象。\n3. 粘贴并验证 MCP Token，填写项目备注名。\n4. 配置完成后回到飞书点击「检查配置」。"),
                         noteBlock("出于安全考虑，请不要在飞书消息中发送 MCP Token 明文。")
-                )
-        );
+                ));
     }
 
     private Map<String, Object> buildProjectEntryCard(TokenResolver.McpConfigCheckResult result) {
@@ -413,56 +330,25 @@ public class FeishuClient {
                 buttonAction("生成周报", "preset_question", "default", Map.of("question", "生成周报"))
         )));
         elements.add(noteBlock("点击预设问题后，可直接复制问题到聊天框提问；后续可继续接入按钮回调自动发起查询。"));
-        return Map.of(
-                "config", Map.of("wide_screen_mode", true, "enable_forward", true),
-                "header", Map.of(
-                        "title", Map.of("tag", "plain_text", "content", "Primelayer AI 项目入口"),
-                        "template", "green"
-                ),
-                "elements", elements
-        );
-    }
-
-    private Map<String, Object> summaryFields(String title, String generatedAt, List<CardMetric> metrics) {
-        List<Object> fields = new ArrayList<>();
-        fields.add(shortField("**来源**\nPrimelayer AI"));
-        fields.add(shortField("**类型**\n" + safeText(title)));
-        fields.add(shortField("**卡片版本**\n" + CARD_SCHEMA_VERSION));
-        fields.add(shortField("**生成时间**\n" + generatedAt));
-        if (metrics != null) {
-            metrics.stream()
-                    .filter(metric -> metric != null && hasText(metric.label()))
-                    .limit(4)
-                    .forEach(metric -> fields.add(shortField("**" + safeText(metric.label()) + "**\n" + safeText(metric.value()))));
-        }
-        return Map.of(
-                "tag", "div",
-                "fields", fields
-        );
+        return cardRenderer.card("Primelayer AI 项目入口", "green", elements);
     }
 
     private Map<String, Object> markdownBlock(String content) {
-        return Map.of(
-                "tag", "div",
-                "text", Map.of(
-                        "tag", "lark_md",
-                        "content", content
-                )
-        );
+        return cardRenderer.markdown(content);
     }
 
     private Map<String, Object> fieldBlock(List<Object> fields) {
-        return Map.of(
-                "tag", "div",
-                "fields", fields
-        );
+        return Map.of("tag", "column_set", "horizontal_spacing", "8px", "columns",
+                fields.stream().map(field -> Map.of(
+                        "tag", "column", "width", "weighted", "weight", 1, "elements", List.of(field)
+                )).toList());
     }
 
     private Map<String, Object> actionBlock(List<Object> actions) {
-        return Map.of(
-                "tag", "action",
-                "actions", actions
-        );
+        return Map.of("tag", "column_set", "horizontal_spacing", "8px", "columns",
+                actions.stream().map(action -> Map.of(
+                        "tag", "column", "width", "weighted", "weight", 1, "elements", List.of(action)
+                )).toList());
     }
 
     private Map<String, Object> buttonAction(String label, String action, String type, Map<String, Object> extraValue) {
@@ -475,28 +361,16 @@ public class FeishuClient {
                 "tag", "button",
                 "text", Map.of("tag", "plain_text", "content", label),
                 "type", type,
-                "value", value
+                "behaviors", List.of(Map.of("type", "callback", "value", value))
         );
     }
 
     private Map<String, Object> shortField(String content) {
-        return Map.of(
-                "is_short", true,
-                "text", Map.of(
-                        "tag", "lark_md",
-                        "content", content
-                )
-        );
+        return cardRenderer.markdown(content);
     }
 
     private Map<String, Object> noteBlock(String content) {
-        return Map.of(
-                "tag", "note",
-                "elements", List.of(Map.of(
-                        "tag", "plain_text",
-                        "content", content
-                ))
-        );
+        return cardRenderer.plain(content);
     }
 
     private String safeText(String value) {
@@ -568,7 +442,7 @@ public class FeishuClient {
         int code = root.path("code").asInt(-1);
         if (code != 0) {
             String message = root.path("msg").asText("unknown error");
-            throw new IllegalStateException("Feishu " + action + " failed: code=" + code + ", msg=" + message);
+            throw new FeishuApiException(code, message, action);
         }
     }
 
@@ -581,6 +455,26 @@ public class FeishuClient {
     }
 
     private record TenantToken(String token, long expiresAtMillis) {}
+
+    static final class FeishuApiException extends IllegalStateException {
+        private final int code;
+        private final String feishuMessage;
+
+        FeishuApiException(int code, String feishuMessage, String action) {
+            super("Feishu " + action + " failed: code=" + code + ", msg=" + feishuMessage);
+            this.code = code;
+            this.feishuMessage = feishuMessage == null ? "" : feishuMessage;
+        }
+
+        boolean cardContentError() {
+            String message = feishuMessage.toLowerCase(java.util.Locale.ROOT);
+            return message.contains("card") || message.contains("content") || message.contains("json")
+                    || message.contains("invalid parameter") || message.contains("卡片")
+                    || message.contains("参数");
+        }
+
+        int code() { return code; }
+    }
 
     public record CardMetric(String label, String value) {}
 

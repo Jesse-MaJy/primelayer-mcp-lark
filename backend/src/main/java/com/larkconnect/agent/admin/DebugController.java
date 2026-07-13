@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -47,6 +48,11 @@ public class DebugController {
     @GetMapping("/feishu/token")
     public ApiResponse<Map<String, Object>> checkFeishuToken() {
         return ApiResponse.ok(debugService.checkFeishuToken());
+    }
+
+    @GetMapping("/feishu/card-presets")
+    public ApiResponse<List<FeishuDemoCardCatalog.CardPreset>> feishuCardPresets() {
+        return ApiResponse.ok(debugService.feishuCardPresets());
     }
 
     @PostMapping("/feishu/reply-test")

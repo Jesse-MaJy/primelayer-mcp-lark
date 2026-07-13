@@ -35,18 +35,22 @@ class AgentOrchestratorTest {
 
         verify(unified).query(new UnifiedQueryService.QueryRequest("r1", "分析 Roche 本月质量风险", "p2p", "u1", "c1"));
         verify(feishu).replyAnswerFeedbackCard(
-                "m1", "r1", "分析 Roche 本月质量风险", "风险分析完成", "项目数据分析", "blue");
+                eq("m1"), eq("r1"), eq("分析 Roche 本月质量风险"),
+                any(AnswerPresentation.class),
+                eq("项目数据分析"), eq("blue"));
         verify(traces).save(eq("r1"), any());
         verify(audit).writeModel(eq("r1"), eq("deepseek-v4-pro"), eq("mcp_deepseek"),
                 argThat(summary -> summary.contains("physicalMcpCalls=2")
                         && summary.contains("pages=2")
                         && summary.contains("inputTokens=20")),
-                eq("风险分析完成"), eq("SUCCEEDED"), eq(100L), eq(null));
+                eq("{\"plainText\":\"风险分析完成\"}"), eq("SUCCEEDED"), eq(100L), eq(null));
         var order = inOrder(audit, feishu);
         order.verify(audit).writeMain(eq("r1"), eq("u1"), eq("c1"), eq(null), eq(List.of("P1")),
-                eq("分析 Roche 本月质量风险"), eq("mcp_deepseek"), eq("风险分析完成"), any(Long.class), eq(null));
+                eq("分析 Roche 本月质量风险"), eq("mcp_deepseek"), eq("风险分析完成"),
+                eq("{\"plainText\":\"风险分析完成\"}"), any(Long.class), eq(null));
         order.verify(feishu).replyAnswerFeedbackCard(
-                "m1", "r1", "分析 Roche 本月质量风险", "风险分析完成", "项目数据分析", "blue");
+                eq("m1"), eq("r1"), eq("分析 Roche 本月质量风险"), any(AnswerPresentation.class),
+                eq("项目数据分析"), eq("blue"));
     }
 
     @Test
@@ -99,7 +103,9 @@ class AgentOrchestratorTest {
     }
 
     private UnifiedQueryService.QueryResult result(String path, String answer) {
-        return new UnifiedQueryService.QueryResult(path, answer, "deepseek-v4-pro", 1, 2, 2, 2, 0, 0,
-                List.of("query_tasks"), List.of("P1"), List.of(), null, 20, 10, 100);
+        AnswerPresentation presentation = new AnswerPresentation(answer, "## " + answer, List.of(), List.of());
+        String json = "{\"plainText\":\"" + answer + "\"}";
+        return new UnifiedQueryService.QueryResult(path, answer, presentation, json, "deepseek-v4-pro",
+                1, 2, 2, 2, 0, 0, List.of("query_tasks"), List.of("P1"), List.of(), null, 20, 10, 100);
     }
 }

@@ -36,6 +36,17 @@ public class DeepSeekClient implements DeepSeekConversationClient {
     @Override
     public Completion complete(String selectedModel, List<Map<String, Object>> messages,
                                List<Map<String, Object>> tools, boolean allowTools) {
+        return requestCompletion(selectedModel, messages, tools, allowTools, false);
+    }
+
+    @Override
+    public Completion formatPresentation(String selectedModel, List<Map<String, Object>> messages) {
+        return requestCompletion(selectedModel, messages, List.of(), false, true);
+    }
+
+    private Completion requestCompletion(String selectedModel, List<Map<String, Object>> messages,
+                                         List<Map<String, Object>> tools, boolean allowTools,
+                                         boolean jsonOutput) {
         requireApiKey();
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", selectedModel);
@@ -44,6 +55,10 @@ public class DeepSeekClient implements DeepSeekConversationClient {
         if (allowTools && tools != null && !tools.isEmpty()) {
             body.put("tools", tools);
             body.put("tool_choice", "auto");
+        }
+        if (jsonOutput) {
+            body.put("response_format", Map.of("type", "json_object"));
+            body.put("max_tokens", 12_000);
         }
         try {
             Map<String, Object> response = restClient.post()

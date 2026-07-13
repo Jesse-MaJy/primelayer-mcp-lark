@@ -20,6 +20,14 @@ export interface AnswerFeedbackDetail {
   updatedAt: string
 }
 
+export interface FeishuCardPreset {
+  key: string
+  label: string
+  description: string
+  color: string
+  card: Record<string, unknown>
+}
+
 export const adminApi = {
   login: (payload: { username: string; password: string }) =>
     http.post<unknown, LoginResponse>('/api/admin/login', payload),
@@ -45,6 +53,8 @@ export const adminApi = {
   debugMcpTools: (payload: Record<string, unknown>) =>
     http.post<unknown, Record<string, unknown>>('/api/admin/debug/mcp/tools', payload),
   debugFeishuToken: () => http.get<unknown, Record<string, unknown>>('/api/admin/debug/feishu/token'),
+  debugFeishuCardPresets: () =>
+    http.get<unknown, FeishuCardPreset[]>('/api/admin/debug/feishu/card-presets'),
   debugFeishuMockEvent: (payload: Record<string, unknown>) => http.post('/api/admin/debug/feishu/mock-event', payload),
   debugFeishuCard: (payload: Record<string, unknown>) =>
     http.post<unknown, Record<string, unknown>>('/api/admin/debug/feishu/card', payload),

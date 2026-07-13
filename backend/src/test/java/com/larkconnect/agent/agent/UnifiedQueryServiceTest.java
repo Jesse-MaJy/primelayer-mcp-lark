@@ -28,6 +28,9 @@ class UnifiedQueryServiceTest {
 
         assertThat(result.path()).isEqualTo("direct_deepseek");
         assertThat(result.answer()).isEqualTo("你好");
+        assertThat(result.presentation().markdown()).isEqualTo("你好");
+        assertThat(result.presentationJson()).contains("\"plainText\":\"你好\"");
+        assertThat(deepSeek.presentationCalls).isEqualTo(1);
         assertThat(result.toolRounds()).isZero();
         assertThat(gateway.executions.get()).isZero();
         assertThat(deepSeek.receivedMessages.get(0).get(0).get("content").toString())
@@ -102,8 +105,8 @@ class UnifiedQueryServiceTest {
         assertThat(result.chunks()).isGreaterThan(1);
         assertThat(deepSeek.analyzedChunks).hasSize(result.chunks());
         assertThat(String.join("", deepSeek.analyzedChunks)).contains("TAIL_MARKER");
-        assertThat(result.inputTokens()).isEqualTo(26);
-        assertThat(result.outputTokens()).isEqualTo(14);
+        assertThat(result.inputTokens()).isEqualTo(30);
+        assertThat(result.outputTokens()).isEqualTo(16);
     }
 
     @Test
@@ -201,7 +204,9 @@ class UnifiedQueryServiceTest {
 
     private UnifiedQueryService service(FakeDeepSeek deepSeek, FakeGateway gateway) {
         ConversationHistoryProvider history = (chatType, openId, chatId, requestId) -> List.of();
-        return new UnifiedQueryService(deepSeek, gateway, new McpToolDefinitionMapper(), history, new ObjectMapper());
+        ObjectMapper objectMapper = new ObjectMapper();
+        return new UnifiedQueryService(deepSeek, gateway, new McpToolDefinitionMapper(), history, objectMapper,
+                new AnswerPresentationParser(objectMapper));
     }
 
     private static McpQueryGateway.QueryContext context() {
@@ -233,6 +238,7 @@ class UnifiedQueryServiceTest {
         private final List<String> selectedModels = new ArrayList<>();
         private int failedChunk = -1;
         private int modelReads;
+        private int presentationCalls;
 
         FakeDeepSeek(Completion... values) { completions.addAll(List.of(values)); }
 
@@ -248,6 +254,17 @@ class UnifiedQueryServiceTest {
                                    List<Map<String, Object>> tools, boolean allowTools) {
             selectedModels.add(selectedModel);
             return complete(messages, tools, allowTools);
+        }
+
+        @Override
+        public Completion formatPresentation(String selectedModel, List<Map<String, Object>> messages) {
+            selectedModels.add(selectedModel);
+            presentationCalls++;
+            String draft = String.valueOf(messages.get(messages.size() - 1).get("content"));
+            String escaped = draft.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
+            String json = "{\"plainText\":\"" + escaped + "\",\"markdown\":\"" + escaped
+                    + "\",\"tables\":[],\"charts\":[]}";
+            return new Completion(json, List.of(), Map.of("role", "assistant", "content", json), 4, 2);
         }
 
         @Override public String analyzeChunk(String toolName, String projectId, String json, int chunkIndex, int chunkCount) {

@@ -1,5 +1,6 @@
 package com.larkconnect.agent.feishu;
 
+import com.larkconnect.agent.agent.AnswerPresentationParser;
 import org.springframework.stereotype.Service;
 
 import java.util.Map;
@@ -10,10 +11,13 @@ public class FeedbackService {
     private static final Set<String> QUICK_REASONS = Set.of("DATA_INACCURATE", "OFF_TOPIC", "INCOMPLETE");
     private final AnswerFeedbackRepository repository;
     private final FeishuClient feishuClient;
+    private final AnswerPresentationParser presentationParser;
 
-    public FeedbackService(AnswerFeedbackRepository repository, FeishuClient feishuClient) {
+    public FeedbackService(AnswerFeedbackRepository repository, FeishuClient feishuClient,
+                           AnswerPresentationParser presentationParser) {
         this.repository = repository;
         this.feishuClient = feishuClient;
+        this.presentationParser = presentationParser;
     }
 
     public Map<String, Object> handle(FeedbackEvent event) {
@@ -59,8 +63,10 @@ public class FeedbackService {
     private Map<String, Object> cardResponse(AnswerFeedbackRepository.AnswerContext answer,
                                              FeishuClient.AnswerFeedbackView view,
                                              String toastType, String toastContent) {
+        AnswerPresentationParser.ParsedPresentation parsed = presentationParser.parse(
+                answer.presentationJson(), answer.answer());
         Map<String, Object> card = feishuClient.buildAnswerFeedbackCard(
-                answer.requestId(), answer.question(), answer.answer(), answer.title(), answer.template(), view);
+                answer.requestId(), answer.question(), parsed.presentation(), answer.title(), answer.template(), view);
         java.util.LinkedHashMap<String, Object> response = new java.util.LinkedHashMap<>();
         if (hasText(toastContent)) {
             response.put("toast", Map.of("type", toastType, "content", toastContent));

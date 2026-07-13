@@ -80,12 +80,13 @@ public class AgentOrchestrator {
             String title = "mcp_deepseek".equals(result.path()) ? "项目数据分析" : "DeepSeek 回答";
             auditService.writeModel(requestId, result.model(), result.path(),
                     auditSummary(result),
-                    result.answer(), Status.SUCCEEDED, result.latencyMs(), null);
+                    result.presentationJson() == null ? result.answer() : result.presentationJson(),
+                    Status.SUCCEEDED, result.latencyMs(), null);
             auditService.writeMain(requestId, openId, chatId, null, result.projectsQueried(), question,
-                    result.path(), result.answer(), System.currentTimeMillis() - started,
+                    result.path(), result.answer(), result.presentationJson(), System.currentTimeMillis() - started,
                     result.failures().isEmpty() ? null : String.join("；", result.failures()));
             chainTraceService.save(requestId, traceFor(requestId, result));
-            feishuClient.replyAnswerFeedbackCard(messageId, requestId, question, result.answer(), title, "blue");
+            feishuClient.replyAnswerFeedbackCard(messageId, requestId, question, result.presentation(), title, "blue");
             return true;
         } catch (Exception e) {
             String error = readable(e);

@@ -23,7 +23,8 @@ class FeishuClientFeedbackCardTest {
                 FeishuClient.AnswerFeedbackView.initial()
         ));
 
-        assertFalse(card.at("/config/update_multi").asBoolean(true));
+        assertEquals("2.0", card.path("schema").asText());
+        assertTrue(card.at("/config/update_multi").asBoolean(false));
         assertEquals("feedback_helpful", findAction(card, "👍 有帮助").path("action").asText());
         assertEquals("req-1", findAction(card, "👍 有帮助").path("request_id").asText());
         assertEquals("feedback_problem", findAction(card, "⚠️ 有问题").path("action").asText());
@@ -47,8 +48,7 @@ class FeishuClientFeedbackCardTest {
         assertTrue(input.path("required").asBoolean());
         assertEquals(500, input.path("max_length").asInt());
         assertEquals("feedback_other_submit", findAction(form, "提交反馈").path("action").asText());
-        assertTrue(findButton(form, "提交反馈").path("complex_interaction").asBoolean());
-        assertEquals("form_submit", findButton(form, "提交反馈").path("action_type").asText());
+        assertEquals("submit", findButton(form, "提交反馈").path("form_action_type").asText());
         assertEquals("feedback_submit", findButton(form, "提交反馈").path("name").asText());
         assertFalse(findByName(form, "feedback_form").toString().contains("feedback_back_reasons"));
         assertEquals("feedback_back_reasons", findAction(form, "返回原因").path("action").asText());
@@ -75,7 +75,7 @@ class FeishuClientFeedbackCardTest {
                 FeishuClient.AnswerFeedbackView.initial()
         ));
 
-        assertEquals("**回答**\n" + answer, findContentStartingWith(card, "**回答**\n"));
+        assertEquals(answer, findContentStartingWith(card, answer.substring(0, 20)));
     }
 
     @Test
@@ -88,14 +88,14 @@ class FeishuClientFeedbackCardTest {
         ));
 
         assertEquals(
-                "**回答**\n" + "答".repeat(10_000) + "\n\n内容较长，已截断。",
-                findContentStartingWith(card, "**回答**\n")
+                "答".repeat(10_000) + "\n\n内容较长，已截断。",
+                findContentStartingWith(card, "答".repeat(20))
         );
     }
 
     private JsonNode findAction(JsonNode root, String label) {
         JsonNode button = findButton(root, label);
-        return button.isMissingNode() ? button : button.path("value");
+        return button.isMissingNode() ? button : button.path("behaviors").path(0).path("value");
     }
 
     private JsonNode findButton(JsonNode root, String label) {

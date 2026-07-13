@@ -9,6 +9,9 @@ public interface DeepSeekConversationClient {
                                 List<Map<String, Object>> tools, boolean allowTools) {
         return complete(messages, tools, allowTools);
     }
+    default Completion formatPresentation(String selectedModel, List<Map<String, Object>> messages) {
+        return complete(selectedModel, messages, List.of(), false);
+    }
     String analyzeChunk(String toolName, String projectId, String json, int chunkIndex, int chunkCount);
     default ChunkAnalysis analyzeChunkWithUsage(String selectedModel, String toolName, String projectId,
                                                 String json, int chunkIndex, int chunkCount) {

@@ -30,6 +30,7 @@ class AnswerFeedbackRepositoryTest {
                 create table agent_audit_log(
                   request_id varchar(128) primary key,
                   final_answer clob,
+                  presentation_json clob,
                   intent varchar(128)
                 )
                 """);
@@ -61,11 +62,13 @@ class AnswerFeedbackRepositoryTest {
     @Test
     void loadsOnlyNormalAiAnswers() {
         jdbc.update("insert into agent_task values (?, ?, ?)", "req-1", "om-1", "问题");
-        jdbc.update("insert into agent_audit_log values (?, ?, ?)", "req-1", "回答", "mcp_deepseek");
+        jdbc.update("insert into agent_audit_log values (?, ?, ?, ?)", "req-1", "回答",
+                "{\"plainText\":\"回答\",\"markdown\":\"## 回答\",\"tables\":[],\"charts\":[]}", "mcp_deepseek");
 
         AnswerFeedbackRepository.AnswerContext context = repository.findAnswer("req-1").orElseThrow();
 
         assertEquals("项目数据分析", context.title());
+        assertTrue(context.presentationJson().contains("## 回答"));
         assertTrue(repository.findAnswer("missing").isEmpty());
     }
 

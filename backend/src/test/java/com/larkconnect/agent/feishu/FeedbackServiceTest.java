@@ -2,6 +2,8 @@ package com.larkconnect.agent.feishu;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.larkconnect.agent.agent.AnswerPresentation;
+import com.larkconnect.agent.agent.AnswerPresentationParser;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -12,6 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -25,12 +28,16 @@ class FeedbackServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new FeedbackService(repository, feishuClient);
+        service = new FeedbackService(repository, feishuClient, new AnswerPresentationParser(objectMapper));
         when(repository.findAnswer("req-1")).thenReturn(Optional.of(new AnswerFeedbackRepository.AnswerContext(
-                "req-1", "om-1", "问题", "回答", "项目数据分析", "blue"
+                "req-1", "om-1", "问题", "回答",
+                "{\"plainText\":\"回答\",\"markdown\":\"## 回答\",\"tables\":[],\"charts\":[]}",
+                "项目数据分析", "blue"
         )));
-        when(feishuClient.buildAnswerFeedbackCard(any(), any(), any(), any(), any(), any()))
+        when(feishuClient.buildAnswerFeedbackCard(anyString(), anyString(), anyString(), anyString(), anyString(), any()))
                 .thenReturn(Map.of("config", Map.of("update_multi", false)));
+        when(feishuClient.buildAnswerFeedbackCard(anyString(), anyString(), any(AnswerPresentation.class),
+                anyString(), anyString(), any())).thenReturn(Map.of("config", Map.of("update_multi", true)));
     }
 
     @Test
@@ -54,7 +61,10 @@ class FeedbackServiceTest {
 
         verify(repository, never()).upsert(any());
         verify(feishuClient).buildAnswerFeedbackCard(
-                "req-1", "问题", "回答", "项目数据分析", "blue", FeishuClient.AnswerFeedbackView.reasons()
+                org.mockito.ArgumentMatchers.eq("req-1"), org.mockito.ArgumentMatchers.eq("问题"),
+                org.mockito.ArgumentMatchers.argThat((AnswerPresentation value) -> value.markdown().equals("## 回答")),
+                org.mockito.ArgumentMatchers.eq("项目数据分析"), org.mockito.ArgumentMatchers.eq("blue"),
+                org.mockito.ArgumentMatchers.eq(FeishuClient.AnswerFeedbackView.reasons())
         );
     }
 
@@ -86,8 +96,10 @@ class FeedbackServiceTest {
         JsonNode json = objectMapper.valueToTree(response);
         assertEquals("评价已是最新状态", json.at("/toast/content").asText());
         verify(feishuClient).buildAnswerFeedbackCard(
-                "req-1", "问题", "回答", "项目数据分析", "blue",
-                FeishuClient.AnswerFeedbackView.submitted("PROBLEM", "INCOMPLETE", null)
+                org.mockito.ArgumentMatchers.eq("req-1"), org.mockito.ArgumentMatchers.eq("问题"),
+                org.mockito.ArgumentMatchers.any(AnswerPresentation.class),
+                org.mockito.ArgumentMatchers.eq("项目数据分析"), org.mockito.ArgumentMatchers.eq("blue"),
+                org.mockito.ArgumentMatchers.eq(FeishuClient.AnswerFeedbackView.submitted("PROBLEM", "INCOMPLETE", null))
         );
     }
 

@@ -30,15 +30,17 @@ public class UnifiedQueryService {
     private final McpToolDefinitionMapper toolMapper;
     private final ConversationHistoryProvider historyProvider;
     private final ObjectMapper objectMapper;
+    private final AnswerPresentationParser presentationParser;
 
     public UnifiedQueryService(DeepSeekConversationClient deepSeek, McpQueryGateway mcpGateway,
                                McpToolDefinitionMapper toolMapper, ConversationHistoryProvider historyProvider,
-                               ObjectMapper objectMapper) {
+                               ObjectMapper objectMapper, AnswerPresentationParser presentationParser) {
         this.deepSeek = deepSeek;
         this.mcpGateway = mcpGateway;
         this.toolMapper = toolMapper;
         this.historyProvider = historyProvider;
         this.objectMapper = objectMapper;
+        this.presentationParser = presentationParser;
     }
 
     public QueryResult query(QueryRequest request) {
@@ -154,9 +156,40 @@ public class UnifiedQueryService {
             answer = safe(answer) + "\n\n说明：查询因 " + stopReason + " 安全上限停止，以上结论仅基于已成功取得的数据。";
         }
 
-        return new QueryResult(path, safe(answer), selectedModel, toolRounds, logicalCalls, physicalCalls,
+        String draftAnswer = safe(answer);
+        AnswerPresentationParser.ParsedPresentation parsed;
+        try {
+            DeepSeekConversationClient.Completion formatted = deepSeek.formatPresentation(selectedModel, List.of(
+                    Map.of("role", "system", "content", presentationInstruction()),
+                    Map.of("role", "user", "content", draftAnswer)
+            ));
+            inputTokens += formatted.inputTokens();
+            outputTokens += formatted.outputTokens();
+            parsed = presentationParser.parse(formatted.content(), draftAnswer);
+            if (parsed.fallback()) {
+                failures.add("回答展示 JSON 无效，已降级为 Markdown。");
+            }
+        } catch (Exception e) {
+            failures.add("回答展示格式化失败：" + readable(e));
+            parsed = presentationParser.parse(null, draftAnswer);
+        }
+
+        return new QueryResult(path, parsed.presentation().plainText(), parsed.presentation(), parsed.json(),
+                selectedModel, toolRounds, logicalCalls, physicalCalls,
                 pages, chunks, history.size(), List.copyOf(toolsUsed), List.copyOf(projectsQueried),
                 distinct(failures), stopReason, inputTokens, outputTokens, System.currentTimeMillis() - started);
+    }
+
+    private String presentationInstruction() {
+        return """
+                将用户给出的最终回答转换为 JSON 展示包，不得增删或改写事实。只输出 JSON 对象。
+                必须完整输出 plainText、markdown、tables、charts 四个字段。
+                plainText 是可读纯文本；markdown 使用标准 Markdown，不要在 markdown 中重复输出已结构化的表格。
+                tables 元素格式：{"title":"明细","totalRows":2,"columns":[{"key":"name","label":"名称"}],"rows":[{"name":"A"}]}。
+                charts 只能用 bar、line、pie，格式：{"title":"趋势","type":"line","series":[{"name":"数量","points":[{"label":"7月1日","value":3}]}]}。
+                只有存在明确的分类比较、时间趋势或占比数据时才生成图表；不得输出 chart_spec、JavaScript 或脚本。
+                示例：{"plainText":"当前有3项缺陷。","markdown":"## 结论\\n当前有 **3** 项缺陷。","tables":[],"charts":[]}
+                """;
     }
 
     private List<Map<String, Object>> initialMessages(QueryRequest request, McpQueryGateway.QueryContext context,
@@ -363,10 +396,20 @@ public class UnifiedQueryService {
     private record RawChunk(String projectId, String content) {}
 
     public record QueryRequest(String requestId, String question, String chatType, String openId, String chatId) {}
-    public record QueryResult(String path, String answer, String model, int toolRounds, int logicalToolCalls,
+    public record QueryResult(String path, String answer, AnswerPresentation presentation, String presentationJson,
+                              String model, int toolRounds, int logicalToolCalls,
                               int physicalMcpCalls, int pages, int chunks, int historyTurns,
                               List<String> toolsUsed, List<String> projectsQueried, List<String> failures,
-                              String stopReason, int inputTokens, int outputTokens, long latencyMs) {}
+                              String stopReason, int inputTokens, int outputTokens, long latencyMs) {
+        public QueryResult(String path, String answer, String model, int toolRounds, int logicalToolCalls,
+                           int physicalMcpCalls, int pages, int chunks, int historyTurns,
+                           List<String> toolsUsed, List<String> projectsQueried, List<String> failures,
+                           String stopReason, int inputTokens, int outputTokens, long latencyMs) {
+            this(path, answer, AnswerPresentation.markdownOnly(answer), null, model, toolRounds,
+                    logicalToolCalls, physicalMcpCalls, pages, chunks, historyTurns, toolsUsed,
+                    projectsQueried, failures, stopReason, inputTokens, outputTokens, latencyMs);
+        }
+    }
 
     public static final class QueryExecutionException extends RuntimeException {
         private final String model;

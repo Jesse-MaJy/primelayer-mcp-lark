@@ -18,11 +18,20 @@ public class AuditService {
     }
 
     public void writeMain(String requestId, String openId, String chatId, String primelayerUserId, List<String> projectIds, String question, String intent, String answer, long latencyMs, String error) {
+        writeMain(requestId, openId, chatId, primelayerUserId, projectIds, question, intent, answer,
+                null, latencyMs, error);
+    }
+
+    public void writeMain(String requestId, String openId, String chatId, String primelayerUserId,
+                          List<String> projectIds, String question, String intent, String answer,
+                          String presentationJson, long latencyMs, String error) {
         jdbcTemplate.update("""
-                insert into agent_audit_log(request_id, feishu_open_id, feishu_chat_id, primelayer_user_id, project_ids, user_question, intent, final_answer, latency_ms, error_message)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                on duplicate key update final_answer = values(final_answer), latency_ms = values(latency_ms), error_message = values(error_message)
-                """, requestId, openId, chatId, primelayerUserId, toJson(projectIds), question, intent, answer, latencyMs, error);
+                insert into agent_audit_log(request_id, feishu_open_id, feishu_chat_id, primelayer_user_id, project_ids, user_question, intent, final_answer, presentation_json, latency_ms, error_message)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                on duplicate key update final_answer = values(final_answer), presentation_json = values(presentation_json),
+                  latency_ms = values(latency_ms), error_message = values(error_message)
+                """, requestId, openId, chatId, primelayerUserId, toJson(projectIds), question, intent,
+                answer, presentationJson, latencyMs, error);
     }
 
     public void writeTool(String requestId, String projectId, String primelayerUserId, String toolName, Map<String, Object> arguments, String status, long latencyMs, String error) {

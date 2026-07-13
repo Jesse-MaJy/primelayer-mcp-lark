@@ -37,12 +37,13 @@ public class DebugService {
     private final FeishuEventParser parser;
     private final AgentTaskService tasks;
     private final ObjectMapper objectMapper;
+    private final FeishuDemoCardCatalog demoCardCatalog;
 
     public DebugService(JdbcTemplate jdbc, ConnectionFactory rabbit, AppProperties properties,
                         DeepSeekClient deepSeek, AiRuntimeConfigService aiSettings,
                         UnifiedQueryService unifiedQuery, McpAdapter mcp, TokenCryptoService crypto,
                         FeishuClient feishu, FeishuEventParser parser, AgentTaskService tasks,
-                        ObjectMapper objectMapper) {
+                        ObjectMapper objectMapper, FeishuDemoCardCatalog demoCardCatalog) {
         this.jdbc = jdbc;
         this.rabbit = rabbit;
         this.properties = properties;
@@ -55,6 +56,7 @@ public class DebugService {
         this.parser = parser;
         this.tasks = tasks;
         this.objectMapper = objectMapper;
+        this.demoCardCatalog = demoCardCatalog;
     }
 
     public Map<String, Object> health() {
@@ -111,7 +113,7 @@ public class DebugService {
         UnifiedQueryService.QueryResult result = unifiedQuery.query(new UnifiedQueryService.QueryRequest(
                 requestId, request.message(), chatType, request.feishuOpenId(), chatId));
         if (Boolean.TRUE.equals(request.sendFeishuMessage()) && hasText(request.feishuChatId())) {
-            feishu.sendAnswerCard(request.feishuChatId(), request.message(), result.answer(),
+            feishu.sendAnswerCard(request.feishuChatId(), request.message(), result.presentation(),
                     "mcp_deepseek".equals(result.path()) ? "项目数据分析" : "DeepSeek 回答", "blue");
         }
         Map<String, Object> response = objectMapper.convertValue(result, new TypeReference<LinkedHashMap<String, Object>>() {});
@@ -130,6 +132,10 @@ public class DebugService {
     }
 
     public Map<String, Object> checkFeishuToken() { return feishu.checkTenantAccessToken(); }
+
+    public List<FeishuDemoCardCatalog.CardPreset> feishuCardPresets() {
+        return demoCardCatalog.presets();
+    }
 
     public Map<String, Object> testFeishuReply(DebugDtos.FeishuReplyTestRequest request) {
         try {
