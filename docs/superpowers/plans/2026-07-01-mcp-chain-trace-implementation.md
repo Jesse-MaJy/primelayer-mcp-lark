@@ -1447,3 +1447,4 @@ git commit -m "fix: stabilize mcp trace verification"
 ```
 
 If no fixes were needed, do not create an empty commit.
+> **历史方案（2026-07-13 标记）**：其中旧 Agent Service/Planner 链路已废弃；当前实现参见双路径设计。

@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class McpAdapterTest {
@@ -21,14 +22,31 @@ class McpAdapterTest {
         return new AppProperties(
                 new AppProperties.Admin(3600, "admin", "admin"),
                 new AppProperties.Agent(5, 30000, 30000),
-                new AppProperties.AgentService(true, "http://localhost:8090"),
                 new AppProperties.Feishu("", "", "", "", false),
-                new AppProperties.DeepSeek("https://api.deepseek.com", "key", "deepseek-chat"),
+                new AppProperties.DeepSeek("https://api.deepseek.com", "key"),
                 new AppProperties.Mcp("http://localhost/mcp", "X-API-Key")
         );
     }
 
     private final McpAdapter adapter = new McpAdapter(testProperties(), RestClient.builder(), new ObjectMapper());
+
+    @Test
+    void shouldRejectJsonRpcErrorReturnedWithHttpSuccess() {
+        assertThatThrownBy(() -> adapter.parseResponse("""
+                {"jsonrpc":"2.0","id":"1","error":{"code":-32602,"message":"invalid arguments"}}
+                """))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("invalid arguments");
+    }
+
+    @Test
+    void shouldRejectMcpToolResultMarkedAsError() {
+        assertThatThrownBy(() -> adapter.parseResponse("""
+                {"jsonrpc":"2.0","id":"1","result":{"isError":true,"content":[{"type":"text","text":"tool failed"}]}}
+                """))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("tool failed");
+    }
 
     // ============================================================
     // extractTotalCount tests
@@ -198,6 +216,18 @@ class McpAdapterTest {
     }
 
     @Test
+    void shouldUseSchemaSelectedOffsetStyleWhenOptionalPaginationArgumentsAreOmitted() {
+        PaginationTestAdapter testAdapter = new PaginationTestAdapter(List.of(singlePageResponse(1, 10)));
+
+        testAdapter.callToolWithPagination("token", "query_data", Map.of("formId", "test-form"), 10,
+                McpAdapter.PaginationStyle.OFFSET_LIMIT);
+
+        Map<String, Object> receivedArgs = testAdapter.receivedArgs.get(0);
+        assertThat(receivedArgs).containsEntry("offset", 0).containsEntry("limit", 10);
+        assertThat(receivedArgs).doesNotContainKeys("page", "pageSize");
+    }
+
+    @Test
     void shouldDefaultToPagePageSizeStyle() {
         PaginationTestAdapter testAdapter = new PaginationTestAdapter(List.of(
                 singlePageResponse(1, 10)
@@ -267,6 +297,22 @@ class McpAdapterTest {
 
         // MAX_PAGES is 50
         assertThat(result.pages()).hasSize(50);
+        assertThat(result.limitReached()).isTrue();
+    }
+
+    @Test
+    void shouldNotReportLimitWhenFiftiethPageIsPartial() {
+        List<Map<String, Object>> responses = new ArrayList<>();
+        for (int i = 0; i < 49; i++) {
+            responses.add(paginatedResponse(List.of(item(i * 2), item(i * 2 + 1)), 99, 2));
+        }
+        responses.add(paginatedResponse(List.of(item(99)), 99, 1));
+        PaginationTestAdapter testAdapter = new PaginationTestAdapter(responses);
+
+        PaginationResult result = testAdapter.callToolWithPagination("token", "query_data", Map.of(), 2);
+
+        assertThat(result.pages()).hasSize(50);
+        assertThat(result.limitReached()).isFalse();
     }
 
     @Test

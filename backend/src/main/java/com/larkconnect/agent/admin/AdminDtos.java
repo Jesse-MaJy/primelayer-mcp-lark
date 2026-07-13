@@ -44,21 +44,7 @@ public final class AdminDtos {
             String status
     ) {}
 
-    public record AiSettingsRequest(
-            String engine,
-            String fastGptBaseUrl,
-            String fastGptModel,
-            String fastGptApiKey,
-            Integer fastGptTimeoutMs,
-            Boolean fastGptMemoryEnabled
-    ) {}
+    public record AiSettingsRequest(String deepSeekModel) {}
 
-    public record AiSettingsResponse(
-            String engine,
-            String fastGptBaseUrl,
-            String fastGptModel,
-            boolean fastGptApiKeyConfigured,
-            int fastGptTimeoutMs,
-            boolean fastGptMemoryEnabled
-    ) {}
+    public record AiSettingsResponse(String deepSeekModel, java.util.List<String> supportedModels) {}
 }

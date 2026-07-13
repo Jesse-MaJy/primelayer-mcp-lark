@@ -1,71 +1,63 @@
 package com.larkconnect.agent.deepseek;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.larkconnect.agent.ai.AiRuntimeConfigService;
 import com.larkconnect.agent.config.AppProperties;
-import com.larkconnect.agent.mcp.McpToolRegistry;
+import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.web.client.RestClient;
 
-import java.lang.reflect.Method;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class DeepSeekClientTest {
-    private final DeepSeekClient client = new DeepSeekClient(
-            new AppProperties(
-                    new AppProperties.Admin(3600, "admin", "admin"),
-                    new AppProperties.Agent(5, 30000, 30000),
-                    new AppProperties.AgentService(false, "http://localhost:8000"),
+    @Test
+    void sendsNativeToolsAndParsesMultipleToolCalls() throws Exception {
+        AtomicReference<String> requestBody = new AtomicReference<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/chat/completions", exchange -> {
+            requestBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            byte[] body = """
+                    {"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[
+                      {"id":"c1","type":"function","function":{"name":"mcp_query_tasks","arguments":"{\\\"projectIds\\\":[\\\"P1\\\"],\\\"arguments\\\":{}}"}},
+                      {"id":"c2","type":"function","function":{"name":"mcp_get_report","arguments":"{\\\"projectIds\\\":[\\\"P1\\\"],\\\"arguments\\\":{}}"}}
+                    ]}}],"usage":{"prompt_tokens":20,"completion_tokens":10}}
+                    """.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        try {
+            JdbcTemplate jdbc = new JdbcTemplate(new DriverManagerDataSource(
+                    "jdbc:h2:mem:deepseek_client;MODE=MySQL;DB_CLOSE_DELAY=-1", "sa", ""));
+            jdbc.execute("create table system_config (config_key varchar(128) primary key, config_value text, description varchar(512), is_sensitive tinyint)");
+            AiRuntimeConfigService settings = new AiRuntimeConfigService(jdbc);
+            AppProperties properties = new AppProperties(
+                    new AppProperties.Admin(3600, "admin", "admin"), new AppProperties.Agent(20, 30000, 30000),
                     new AppProperties.Feishu("", "", "", "", false),
-                    new AppProperties.DeepSeek("https://api.deepseek.com", "test-key", "deepseek-chat"),
-                    new AppProperties.Mcp("http://localhost/mcp", "X-API-Key")
-            ),
-            new ObjectMapper(),
-            RestClient.builder(),
-            new McpToolRegistry()
-    );
+                    new AppProperties.DeepSeek("http://localhost:" + server.getAddress().getPort(), "secret"),
+                    new AppProperties.Mcp("http://localhost/mcp", "X-API-Key"));
+            DeepSeekClient client = new DeepSeekClient(properties, settings, new ObjectMapper(), RestClient.builder());
 
-    @Test
-    void parsesJsonCodeBlockAndSnakeCaseFields() throws Exception {
-        DeepSeekPlan plan = normalize("""
-                ```json
-                {
-                  "intent": "project_query",
-                  "project_scope": "single_project",
-                  "project_hints": ["Roche"],
-                  "tool_calls": [
-                    {
-                      "tool_name": "primelayer.query_project_health",
-                      "args": {"project": "Roche"}
-                    }
-                  ],
-                  "need_clarification": false,
-                  "answer_style": "normal"
-                }
-                ```
-                """);
+            DeepSeekConversationClient.Completion result = client.complete(
+                    List.of(Map.of("role", "user", "content", "查询")),
+                    List.of(Map.of("type", "function", "function", Map.of("name", "mcp_query_tasks"))), true);
 
-        assertThat(plan.intent()).isEqualTo("project_query");
-        assertThat(plan.projectScope()).isEqualTo("single_project");
-        assertThat(plan.projectHints()).containsExactly("Roche");
-        assertThat(plan.toolCalls()).hasSize(1);
-        assertThat(plan.toolCalls().get(0).toolName()).isEqualTo("primelayer.query_project_health");
-        assertThat(plan.toolCalls().get(0).arguments()).containsEntry("question", "今天项目施工情况");
-    }
-
-    @Test
-    void fallsBackToSafeToolWhenToolNameIsInvalid() throws Exception {
-        DeepSeekPlan plan = normalize("""
-                {"intent":"project_query","toolCalls":[{"toolName":"delete_project","arguments":{}}]}
-                """);
-
-        assertThat(plan.toolCalls()).hasSize(1);
-        assertThat(plan.toolCalls().get(0).toolName()).isEqualTo("primelayer.query_project_health");
-    }
-
-    private DeepSeekPlan normalize(String rawContent) throws Exception {
-        Method method = DeepSeekClient.class.getDeclaredMethod("normalizePlan", String.class, String.class, String.class);
-        method.setAccessible(true);
-        return (DeepSeekPlan) method.invoke(client, rawContent, "今天项目施工情况", "p2p");
+            assertThat(result.toolCalls()).extracting(DeepSeekConversationClient.ToolCall::name)
+                    .containsExactly("mcp_query_tasks", "mcp_get_report");
+            assertThat(result.inputTokens()).isEqualTo(20);
+            assertThat(requestBody.get()).contains("\"tool_choice\":\"auto\"").contains("deepseek-v4-pro");
+        } finally {
+            server.stop(0);
+        }
     }
 }

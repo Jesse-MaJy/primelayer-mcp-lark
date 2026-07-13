@@ -2,7 +2,6 @@ package com.larkconnect.agent.token;
 
 import com.larkconnect.agent.common.Status;
 import com.larkconnect.agent.crypto.TokenCryptoService;
-import com.larkconnect.agent.deepseek.DeepSeekPlan;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -22,18 +21,6 @@ public class TokenResolver {
     public TokenResolver(JdbcTemplate jdbcTemplate, TokenCryptoService cryptoService) {
         this.jdbcTemplate = jdbcTemplate;
         this.cryptoService = cryptoService;
-    }
-
-    public ResolvedContext resolve(String openId, String chatId, String chatType, DeepSeekPlan plan, int maxProjects) {
-        OwnerTokens ownerTokens = findDirectOwnerTokens(openId, chatId, chatType, maxProjects);
-        if (!ownerTokens.tokens().isEmpty()) {
-            return resolveFromTokens(ownerTokens.contextUserId(), ownerTokens.tokens(), plan);
-        }
-        ResolvedContext legacy = resolveLegacy(openId, chatId, chatType, plan, maxProjects);
-        if (!legacy.hasError()) {
-            return legacy;
-        }
-        return ResolvedContext.error(noTokenMessage(openId, chatId, chatType));
     }
 
     public ResolvedContext resolveCandidates(String openId, String chatId, String chatType, int maxProjects) {
@@ -80,23 +67,6 @@ public class TokenResolver {
                 """, verifyStatus, verifyError, tokenId);
     }
 
-    private ResolvedContext resolveFromTokens(String contextUserId, List<TokenEntry> tokens, DeepSeekPlan plan) {
-        if ("all_accessible_projects".equals(plan.projectScope())) {
-            return ResolvedContext.ok(contextUserId, tokens);
-        }
-        String projectHint = plan.projectHints().isEmpty() ? null : plan.projectHints().get(0);
-        if (isGenericProjectHint(projectHint)) {
-            if (tokens.size() == 1) {
-                return ResolvedContext.ok(contextUserId, tokens);
-            }
-            return ResolvedContext.error("我还无法判断你要查询哪个项目，请补充项目备注名。你当前有 " + tokens.size() + " 个可查询项目。");
-        }
-        TokenEntry token = findTokenByHint(tokens, projectHint);
-        return token == null
-                ? ResolvedContext.error(buildNoMatchMessage(projectHint, tokens))
-                : ResolvedContext.ok(contextUserId, List.of(token));
-    }
-
     private OwnerTokens findDirectOwnerTokens(String openId, String chatId, String chatType, int maxProjects) {
         if ("group".equals(chatType) && hasText(chatId)) {
             List<TokenEntry> chatTokens = findTokensByOwner(OWNER_CHAT_ID, chatId, maxProjects);
@@ -106,27 +76,6 @@ public class TokenResolver {
         }
         List<TokenEntry> openIdTokens = findTokensByOwner(OWNER_OPEN_ID, openId, maxProjects);
         return new OwnerTokens(OWNER_OPEN_ID, openId, openId, openIdTokens);
-    }
-
-    private ResolvedContext resolveLegacy(String openId, String chatId, String chatType, DeepSeekPlan plan, int maxProjects) {
-        UserBinding user = findUser(openId);
-        if (user == null) {
-            return ResolvedContext.error("未找到旧版人员绑定。");
-        }
-        if ("group".equals(chatType)) {
-            ChatProject project = findChatProject(chatId);
-            if (project != null) {
-                TokenEntry token = findLegacyToken(user.primelayerUserId(), project.projectId());
-                if (token != null) {
-                    return ResolvedContext.ok(user.primelayerUserId(), List.of(token));
-                }
-            }
-        }
-        List<TokenEntry> tokens = findLegacyTokens(user.primelayerUserId(), maxProjects);
-        if (tokens.isEmpty()) {
-            return ResolvedContext.error("旧版人员绑定下没有 ACTIVE MCP Token。");
-        }
-        return resolveFromTokens(user.primelayerUserId(), tokens, plan);
     }
 
     private ResolvedContext resolveLegacyCandidates(String openId, String chatId, String chatType, int maxProjects) {

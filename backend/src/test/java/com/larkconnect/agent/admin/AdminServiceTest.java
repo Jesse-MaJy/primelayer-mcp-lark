@@ -71,9 +71,8 @@ class AdminServiceTest {
         AppProperties properties = new AppProperties(
                 new AppProperties.Admin(28800, "admin", "admin"),
                 new AppProperties.Agent(5, 10000, 10000),
-                new AppProperties.AgentService(false, ""),
                 new AppProperties.Feishu("", "", "", "", false),
-                new AppProperties.DeepSeek("", "", ""),
+                new AppProperties.DeepSeek("", ""),
                 new AppProperties.Mcp("http://localhost/mcp", "X-API-Key")
         );
         mcpAdapter = new CountingMcpAdapter(properties);

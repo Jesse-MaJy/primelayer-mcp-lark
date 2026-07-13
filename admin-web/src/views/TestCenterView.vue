@@ -42,33 +42,12 @@
           </a-descriptions>
           <ResultViewer :data="deepseek.connectionResult" />
         </div>
-        <div class="split-grid">
-          <a-form layout="vertical">
-            <a-form-item label="问题">
-              <a-textarea v-model:value="deepseek.question" :rows="4" />
-            </a-form-item>
-            <a-form-item label="会话类型">
-              <a-radio-group v-model:value="deepseek.chatType">
-                <a-radio-button value="p2p">私聊</a-radio-button>
-                <a-radio-button value="group">群聊</a-radio-button>
-              </a-radio-group>
-            </a-form-item>
-            <div class="toolbar">
-              <a-button type="primary" :loading="loading.plan" @click="runDeepSeekPlan">生成计划</a-button>
-              <a-button :loading="loading.summarize" @click="runDeepSeekSummarize">总结模拟数据</a-button>
-            </div>
-            <a-form-item label="模拟 MCP 数据 JSON">
-              <a-textarea v-model:value="deepseek.toolResultsJson" :rows="8" />
-            </a-form-item>
-          </a-form>
-          <ResultViewer :data="deepseek.result" />
-        </div>
       </a-tab-pane>
 
       <a-tab-pane key="mcp" tab="MCP 测试">
         <div class="split-grid">
           <a-form layout="vertical">
-            <a-alert class="section-alert" type="info" show-icon message="MCP 测试现在使用自然语言问题。后端会先读取 Primelayer MCP 的真实工具列表，再用 DeepSeek 选择工具并生成参数。" />
+            <a-alert class="section-alert" type="info" show-icon message="这里仅保留底层 MCP 工具发现与连通性诊断；自然语言查询请使用 Agent 端到端测试。" />
             <a-form-item label="项目 Token">
               <a-select
                 v-model:value="mcp.tokenId"
@@ -78,12 +57,8 @@
                 placeholder="选择后台已保存的 token"
               />
             </a-form-item>
-            <a-form-item label="问题">
-              <a-textarea v-model:value="mcp.question" :rows="6" />
-            </a-form-item>
             <div class="toolbar">
-              <a-button type="primary" :loading="loading.mcp" @click="runMcpQuestion">用问题调用 MCP</a-button>
-              <a-button :loading="loading.mcpTools" @click="loadMcpTools">加载 MCP 工具</a-button>
+              <a-button type="primary" :loading="loading.mcpTools" @click="loadMcpTools">加载 MCP 工具</a-button>
             </div>
           </a-form>
           <div>
@@ -91,23 +66,11 @@
               <a-descriptions-item label="状态">
                 <a-tag :color="mcpOk ? 'green' : 'red'">{{ mcpOk ? '调用成功' : '调用失败' }}</a-tag>
               </a-descriptions-item>
-              <a-descriptions-item label="耗时">
-                {{ mcp.result.latencyMs ?? '-' }} ms
+              <a-descriptions-item label="工具数量">
+                {{ mcp.result.toolCount ?? '-' }}
               </a-descriptions-item>
-              <a-descriptions-item label="工具">
-                {{ mcp.result.toolName || '-' }}
-              </a-descriptions-item>
-              <a-descriptions-item label="规划器">
-                {{ mcp.result.planner || '-' }}
-              </a-descriptions-item>
-              <a-descriptions-item label="摘要" :span="2">
-                {{ mcp.result.summary || mcp.result.error || '-' }}
-              </a-descriptions-item>
-              <a-descriptions-item label="选择原因" :span="2">
-                {{ mcp.result.reason || '-' }}
-              </a-descriptions-item>
-              <a-descriptions-item label="返回文本" :span="2">
-                <pre class="inline-result">{{ mcp.result.resultText || '-' }}</pre>
+              <a-descriptions-item label="结果" :span="2">
+                {{ mcp.result.error || '已读取实时工具列表' }}
               </a-descriptions-item>
             </a-descriptions>
             <ResultViewer :data="mcp.result" />
@@ -138,14 +101,14 @@
           </a-form>
           <div>
             <a-descriptions v-if="agentSummaryVisible" class="result-block mcp-summary" bordered :column="2" size="small">
-              <a-descriptions-item label="规划器">
-                {{ agentPlanner }}
+              <a-descriptions-item label="路径">
+                {{ agentPath }}
               </a-descriptions-item>
-              <a-descriptions-item label="Skill">
-                {{ agentSkill }}
+              <a-descriptions-item label="模型">
+                {{ agentModel }}
               </a-descriptions-item>
-              <a-descriptions-item label="项目范围">
-                {{ agentProjectScope }}
+              <a-descriptions-item label="MCP 轮次">
+                {{ agentToolRounds }}
               </a-descriptions-item>
               <a-descriptions-item label="工具调用数">
                 {{ agentToolCallCount }}
@@ -284,9 +247,6 @@ const personOptions = ref<{ label: string; value: string }[]>([])
 const loading = reactive({
   health: false,
   deepseekConnection: false,
-  plan: false,
-  summarize: false,
-  mcp: false,
   mcpTools: false,
   agent: false,
   feishuToken: false,
@@ -304,18 +264,11 @@ const receiveIdTypeOptions = [
 
 const deepseek = reactive({
   connectionPrompt: '请只回复 OK，用于测试 DeepSeek API 连通性。',
-  connectionResult: null as Record<string, unknown> | null,
-  question: '帮我看一下 Roche 项目的风险',
-  chatType: 'p2p',
-  toolResultsJson: JSON.stringify([
-    { projectId: 'roche', status: 'SUCCEEDED', result: { risks: ['示例风险'] } }
-  ], null, 2),
-  result: null as unknown
+  connectionResult: null as Record<string, unknown> | null
 })
 
 const mcp = reactive({
   tokenId: undefined as number | undefined,
-  question: '获取当前项目名称、工作空间名称、用户个人信息和租户名称',
   result: null as Record<string, unknown> | null
 })
 
@@ -423,11 +376,7 @@ const healthItems = computed(() => {
     { label: 'RabbitMQ', ok: rabbit?.ok === true, value: rabbit?.ok === true ? '正常' : '异常' },
     { label: 'DeepSeek Key', ok: value.deepSeekApiKeyConfigured === true, value: value.deepSeekApiKeyConfigured ? '已配置' : '未配置' },
     { label: 'MCP Endpoint', ok: value.mcpEndpointConfigured === true, value: value.mcpEndpointConfigured ? '已配置' : '未配置' },
-    { label: 'MCP Header', ok: Boolean(value.mcpAuthHeaderName), value: String(value.mcpAuthHeaderName || '-') },
-    { label: 'AI 引擎', ok: Boolean(value.aiEngine), value: String(value.aiEngine || '-') },
-    { label: 'Agent Service', ok: value.agentServiceEnabled === true, value: value.agentServiceEnabled ? '已启用' : '未启用' },
-    { label: 'FastGPT Key', ok: value.fastGptApiKeyConfigured === true, value: value.fastGptApiKeyConfigured ? '已配置' : '未配置' },
-    { label: 'FastGPT 记忆', ok: value.fastGptMemoryEnabled === true, value: value.fastGptMemoryEnabled ? '已开启' : '已关闭' },
+    { label: 'DeepSeek 模型', ok: Boolean(value.deepSeekModel), value: String(value.deepSeekModel || '-') },
     { label: '飞书 App ID', ok: value.feishuAppIdConfigured === true, value: value.feishuAppIdConfigured ? '已配置' : '未配置' },
     { label: '飞书 Secret', ok: value.feishuAppSecretConfigured === true, value: value.feishuAppSecretConfigured ? '已配置' : '未配置' },
     { label: '飞书 Verification Token', ok: value.feishuVerificationTokenConfigured === true, value: value.feishuVerificationTokenConfigured ? '已配置' : '未配置' },
@@ -441,18 +390,11 @@ const feishuTokenOk = computed(() => feishu.tokenResult?.ok === true)
 const feishuCardOk = computed(() => feishuCard.result?.ok === true)
 const selectedPreset = computed(() => getCardPreset(feishuCard.presetKey))
 const agentResult = computed(() => (agent.result || {}) as Record<string, unknown>)
-const agentPlan = computed(() => {
-  const result = agentResult.value
-  return (result.agentPlan || result.plan || {}) as Record<string, unknown>
-})
 const agentSummaryVisible = computed(() => Boolean(agent.result))
-const agentPlanner = computed(() => String(agentResult.value.planner || (agentResult.value.agentServiceFallback ? 'legacy-fallback' : 'legacy-deepseek')))
-const agentSkill = computed(() => String(agentPlan.value.skillId || agentPlan.value.intent || '-'))
-const agentProjectScope = computed(() => String(agentPlan.value.projectScope || '-'))
-const agentToolCallCount = computed(() => {
-  const calls = agentPlan.value.toolCalls
-  return Array.isArray(calls) ? calls.length : 0
-})
+const agentPath = computed(() => String(agentResult.value.path || '-'))
+const agentModel = computed(() => String(agentResult.value.model || '-'))
+const agentToolRounds = computed(() => Number(agentResult.value.toolRounds || 0))
+const agentToolCallCount = computed(() => Number(agentResult.value.logicalToolCalls || 0))
 const agentFinalAnswer = computed(() => String(agentResult.value.finalAnswer || '-'))
 
 async function refreshAll() {
@@ -499,20 +441,6 @@ async function loadPeople() {
   }
 }
 
-async function runDeepSeekPlan() {
-  loading.plan = true
-  try {
-    deepseek.result = await adminApi.debugDeepSeekPlan({
-      question: deepseek.question,
-      chatType: deepseek.chatType
-    })
-  } catch (error) {
-    showError(error)
-  } finally {
-    loading.plan = false
-  }
-}
-
 async function runDeepSeekConnection() {
   loading.deepseekConnection = true
   try {
@@ -523,20 +451,6 @@ async function runDeepSeekConnection() {
     showError(error)
   } finally {
     loading.deepseekConnection = false
-  }
-}
-
-async function runDeepSeekSummarize() {
-  loading.summarize = true
-  try {
-    deepseek.result = await adminApi.debugDeepSeekSummarize({
-      question: deepseek.question,
-      toolResults: parseJson(deepseek.toolResultsJson)
-    })
-  } catch (error) {
-    showError(error)
-  } finally {
-    loading.summarize = false
   }
 }
 
@@ -554,28 +468,6 @@ async function loadMcpTools() {
     showError(error)
   } finally {
     loading.mcpTools = false
-  }
-}
-
-async function runMcpQuestion() {
-  if (!mcp.tokenId) {
-    message.warning('请先选择项目 Token')
-    return
-  }
-  if (!mcp.question.trim()) {
-    message.warning('请输入问题')
-    return
-  }
-  loading.mcp = true
-  try {
-    mcp.result = await adminApi.debugMcpQuestion({
-      tokenId: mcp.tokenId,
-      question: mcp.question
-    })
-  } catch (error) {
-    showError(error)
-  } finally {
-    loading.mcp = false
   }
 }
 

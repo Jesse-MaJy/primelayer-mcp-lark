@@ -152,7 +152,7 @@ async function renderMermaid() {
 
     // Add click handlers to SVG elements
     for (const node of nodes) {
-      const el = mermaidContainer.value.querySelector(`[id="${node.id}"]`)
+      const el = mermaidContainer.value.querySelector<HTMLElement>(`[id="${node.id}"]`)
       if (el) {
         el.style.cursor = 'pointer'
         el.addEventListener('click', () => openNodeDetail(node))

@@ -6,12 +6,8 @@ export interface LoginResponse {
 }
 
 export interface AiSettings {
-  engine: 'LOCAL_AGENT' | 'FASTGPT'
-  fastGptBaseUrl: string
-  fastGptModel: string
-  fastGptApiKeyConfigured: boolean
-  fastGptTimeoutMs: number
-  fastGptMemoryEnabled: boolean
+  deepSeekModel: 'deepseek-v4-pro' | 'deepseek-v4-flash'
+  supportedModels: string[]
 }
 
 export const adminApi = {
@@ -33,15 +29,9 @@ export const adminApi = {
   debugHealth: () => http.get<unknown, Record<string, unknown>>('/api/admin/debug/health'),
   debugDeepSeekConnection: (payload: Record<string, unknown>) =>
     http.post<unknown, Record<string, unknown>>('/api/admin/debug/deepseek/connection', payload),
-  debugFastGptConnection: (payload: Record<string, unknown>) =>
-    http.post<unknown, Record<string, unknown>>('/api/admin/debug/fastgpt/connection', payload),
-  debugDeepSeekPlan: (payload: Record<string, unknown>) => http.post('/api/admin/debug/deepseek/plan', payload),
-  debugDeepSeekSummarize: (payload: Record<string, unknown>) => http.post('/api/admin/debug/deepseek/summarize', payload),
   debugMcpCall: (payload: Record<string, unknown>) => http.post('/api/admin/debug/mcp/call', payload),
   debugMcpTools: (payload: Record<string, unknown>) =>
     http.post<unknown, Record<string, unknown>>('/api/admin/debug/mcp/tools', payload),
-  debugMcpQuestion: (payload: Record<string, unknown>) =>
-    http.post<unknown, Record<string, unknown>>('/api/admin/debug/mcp/question', payload),
   debugFeishuToken: () => http.get<unknown, Record<string, unknown>>('/api/admin/debug/feishu/token'),
   debugFeishuMockEvent: (payload: Record<string, unknown>) => http.post('/api/admin/debug/feishu/mock-event', payload),
   debugFeishuCard: (payload: Record<string, unknown>) =>

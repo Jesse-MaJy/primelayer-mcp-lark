@@ -18,8 +18,11 @@ public class AgentWorker {
     public void handle(AgentTaskMessage message) {
         taskService.markRunning(message.requestId());
         try {
-            orchestrator.process(message.requestId());
-            taskService.markSucceeded(message.requestId());
+            if (orchestrator.process(message.requestId())) {
+                taskService.markSucceeded(message.requestId());
+            } else {
+                taskService.markFailed(message.requestId(), "AI 服务暂不可用");
+            }
         } catch (Exception e) {
             taskService.markFailed(message.requestId(), e.getMessage());
             throw e;

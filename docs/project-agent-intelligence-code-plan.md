@@ -416,3 +416,4 @@ npm run build
 - [ ] Python 测试通过。
 - [ ] Java 测试通过。
 - [ ] 审计和链路追踪不包含 token。
+> **已废弃（2026-07-13）**：本文描述的 Python agent-service 路线已由 `2026-07-13-agent-dual-query-design.md` 取代，仅保留历史参考。

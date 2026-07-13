@@ -108,16 +108,39 @@ public class McpAdapter {
         return parseResponse(body);
     }
 
-    private Map<String, Object> parseResponse(String body) {
+    Map<String, Object> parseResponse(String body) {
         if (body == null || body.isBlank()) {
             return Map.of();
         }
         String json = extractJson(body);
+        Map<String, Object> response;
         try {
-            return objectMapper.readValue(json, new TypeReference<LinkedHashMap<String, Object>>() {});
+            response = objectMapper.readValue(json, new TypeReference<LinkedHashMap<String, Object>>() {});
         } catch (Exception e) {
             throw new IllegalStateException("MCP 返回内容不是可解析 JSON：" + body, e);
         }
+        Object error = response.get("error");
+        if (error instanceof Map<?, ?> errorMap) {
+            Object code = errorMap.get("code");
+            Object message = errorMap.get("message");
+            throw new IllegalStateException("MCP JSON-RPC 错误"
+                    + (code == null ? "" : " [" + code + "]")
+                    + (message == null ? "" : "：" + message));
+        }
+        if (error != null) throw new IllegalStateException("MCP JSON-RPC 错误：" + error);
+        Object result = response.get("result");
+        if (result instanceof Map<?, ?> resultMap && Boolean.TRUE.equals(resultMap.get("isError"))) {
+            Object content = resultMap.get("content");
+            String detail;
+            try {
+                detail = objectMapper.writeValueAsString(content);
+            } catch (Exception ignored) {
+                detail = String.valueOf(content);
+            }
+            if (detail.length() > 1000) detail = detail.substring(0, 1000) + "...";
+            throw new IllegalStateException("MCP 工具执行失败：" + detail);
+        }
+        return response;
     }
 
     private String extractJson(String body) {
@@ -144,7 +167,8 @@ public class McpAdapter {
             int totalCount,
             int totalPages,
             int successPages,
-            int failedPages
+            int failedPages,
+            boolean limitReached
     ) {}
 
     public record PageData(
@@ -157,6 +181,8 @@ public class McpAdapter {
             long latencyMs
     ) {}
 
+    public enum PaginationStyle { AUTO, PAGE_SIZE, OFFSET_LIMIT }
+
     private static final int DEFAULT_PAGE_SIZE = 100;
     private static final int MAX_PAGES = 50;
 
@@ -165,13 +191,20 @@ public class McpAdapter {
     }
 
     public PaginationResult callToolWithPagination(String token, String toolName, Map<String, Object> arguments, int pageSize) {
+        return callToolWithPagination(token, toolName, arguments, pageSize, PaginationStyle.AUTO);
+    }
+
+    public PaginationResult callToolWithPagination(String token, String toolName, Map<String, Object> arguments,
+                                                   int pageSize, PaginationStyle style) {
         List<PageData> pages = new ArrayList<>();
         int totalCount = 0;
         int successPages = 0;
         int failedPages = 0;
 
-        boolean usePageStyle = arguments.containsKey("page") || arguments.containsKey("pageSize");
-        boolean useOffsetStyle = arguments.containsKey("offset") || arguments.containsKey("limit");
+        boolean usePageStyle = style == PaginationStyle.PAGE_SIZE
+                || style == PaginationStyle.AUTO && (arguments.containsKey("page") || arguments.containsKey("pageSize"));
+        boolean useOffsetStyle = style == PaginationStyle.OFFSET_LIMIT
+                || style == PaginationStyle.AUTO && (arguments.containsKey("offset") || arguments.containsKey("limit"));
         if (!usePageStyle && !useOffsetStyle) {
             usePageStyle = true;
         }
@@ -213,7 +246,7 @@ public class McpAdapter {
                 pages.add(new PageData(page, pageSize, Status.FAILED, rawRequest, null, readableError(e), latency));
                 failedPages++;
                 if (page == 0) {
-                    return new PaginationResult(pages, 0, 1, successPages, failedPages);
+                    return new PaginationResult(pages, 0, 1, successPages, failedPages, false);
                 }
                 break;
             }
@@ -222,7 +255,7 @@ public class McpAdapter {
         }
 
         int totalPages = pages.size();
-        return new PaginationResult(pages, totalCount, totalPages, successPages, failedPages);
+        return new PaginationResult(pages, totalCount, totalPages, successPages, failedPages, page >= maxIterations);
     }
 
     int extractTotalCount(Map<String, Object> response) {
