@@ -47,4 +47,8 @@ public final class AdminDtos {
     public record AiSettingsRequest(String deepSeekModel) {}
 
     public record AiSettingsResponse(String deepSeekModel, java.util.List<String> supportedModels) {}
+
+    public record PromptVersionRequest(String content) {}
+    public record PromptActionRequest(String note) {}
+    public record PromptReplayRequest(Long snapshotId) {}
 }

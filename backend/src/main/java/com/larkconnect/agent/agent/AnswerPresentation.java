@@ -6,20 +6,16 @@ import java.util.Map;
 
 public record AnswerPresentation(
         String plainText,
-        String markdown,
-        List<AnswerTable> tables,
-        List<AnswerChart> charts
+        List<ContentBlock> blocks
 ) {
     public AnswerPresentation {
         plainText = text(plainText);
-        markdown = text(markdown);
-        tables = tables == null ? List.of() : List.copyOf(tables);
-        charts = charts == null ? List.of() : List.copyOf(charts);
+        blocks = blocks == null ? List.of() : blocks.stream().filter(java.util.Objects::nonNull).toList();
     }
 
     public static AnswerPresentation markdownOnly(String value) {
         String safe = text(value);
-        return new AnswerPresentation(safe, safe, List.of(), List.of());
+        return new AnswerPresentation(safe, List.of(ContentBlock.markdown(safe)));
     }
 
     private static String text(String value) {
@@ -37,6 +33,43 @@ public record AnswerPresentation(
     }
 
     public record TableColumn(String key, String label) {}
+
+    public enum BlockType { MARKDOWN, TABLE, CHART }
+
+    public record ContentBlock(BlockType type, String markdown, AnswerTable table, AnswerChart chart) {
+        public ContentBlock {
+            if (type == null) throw new IllegalArgumentException("内容块类型不能为空");
+            switch (type) {
+                case MARKDOWN -> {
+                    markdown = text(markdown);
+                    table = null;
+                    chart = null;
+                }
+                case TABLE -> {
+                    if (table == null) throw new IllegalArgumentException("表格内容块缺少表格数据");
+                    markdown = null;
+                    chart = null;
+                }
+                case CHART -> {
+                    if (chart == null) throw new IllegalArgumentException("图表内容块缺少图表数据");
+                    markdown = null;
+                    table = null;
+                }
+            }
+        }
+
+        public static ContentBlock markdown(String value) {
+            return new ContentBlock(BlockType.MARKDOWN, value, null, null);
+        }
+
+        public static ContentBlock table(AnswerTable value) {
+            return new ContentBlock(BlockType.TABLE, null, value, null);
+        }
+
+        public static ContentBlock chart(AnswerChart value) {
+            return new ContentBlock(BlockType.CHART, null, null, value);
+        }
+    }
 
     public record AnswerChart(String title, ChartType type, List<ChartSeries> series) {
         public AnswerChart {

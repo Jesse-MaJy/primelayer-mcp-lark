@@ -181,9 +181,22 @@ public class AdminRepository {
                   a.project_ids,
                   a.final_answer,
                   a.latency_ms,
+                  a.latency_ms as processing_latency_ms,
+                  case when t.started_at is null then null
+                       else timestampdiff(microsecond, t.created_at, t.started_at) / 1000 end as queue_latency_ms,
                   a.error_message as audit_error,
-                  coalesce(mc.model_call_count, 0) as model_call_count,
+                  coalesce(ev.model_call_count, mc.model_call_count, 0) as model_call_count,
                   coalesce(tc.tool_call_count, 0) as tool_call_count,
+                  coalesce(ev.business_mcp_call_count, tc.tool_call_count, 0) as business_mcp_call_count,
+                  coalesce(ev.tool_discovery_count, 0) as tool_discovery_count,
+                  coalesce(ev.returned_count, 0) as returned_count,
+                  coalesce(ev.input_tokens, 0) as input_tokens,
+                  coalesce(ev.output_tokens, 0) as output_tokens,
+                  coalesce(ev.input_tokens, 0) + coalesce(ev.output_tokens, 0) as total_tokens,
+                  case when a.trace_status = 'PARTIAL' then 'PARTIAL'
+                       when coalesce(ev.event_count, 0) > 0 then 'COMPLETE'
+                       when ct.request_id is not null then 'SUMMARY_ONLY'
+                       else 'MISSING' end as trace_completeness,
                   coalesce(tc.failed_tool_call_count, 0) as failed_tool_call_count,
                   tn.tool_names,
                   coalesce(fb.helpful_count, 0) as helpful_count,
@@ -192,6 +205,7 @@ public class AdminRepository {
                 from agent_task t
                 left join agent_audit_log a on a.request_id = t.request_id
                 left join user_binding ub on ub.feishu_open_id = t.feishu_open_id
+                left join agent_chain_trace ct on ct.request_id = t.request_id
                 left join (
                   select request_id, count(*) as model_call_count
                   from agent_model_call_log
@@ -204,6 +218,18 @@ public class AdminRepository {
                   from agent_tool_call_log
                   group by request_id
                 ) tc on tc.request_id = t.request_id
+                left join (
+                  select request_id,
+                         count(*) as event_count,
+                         sum(case when event_type = 'model_call' then 1 else 0 end) as model_call_count,
+                         sum(case when event_type = 'mcp_call' and purpose = 'tool_call' then 1 else 0 end) as business_mcp_call_count,
+                         sum(case when event_type = 'mcp_call' and purpose = 'tool_discovery' then 1 else 0 end) as tool_discovery_count,
+                         sum(case when event_type = 'mcp_call' and purpose = 'tool_call' then coalesce(returned_count, 0) else 0 end) as returned_count,
+                         sum(case when event_type = 'model_call' then coalesce(input_tokens, 0) else 0 end) as input_tokens,
+                         sum(case when event_type = 'model_call' then coalesce(output_tokens, 0) else 0 end) as output_tokens
+                  from agent_trace_event
+                  group by request_id
+                ) ev on ev.request_id = t.request_id
                 left join (
                   select request_id,
                          group_concat(distinct tool_name order by tool_name separator ',') as tool_names

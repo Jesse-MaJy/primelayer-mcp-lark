@@ -10,6 +10,10 @@ import com.larkconnect.agent.mcp.McpAdapter;
 import com.larkconnect.agent.token.TokenResolver;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -27,14 +31,21 @@ public class AgentOrchestrator {
     private final ChainTraceService chainTraceService;
     private final ControlCommandRouter controlRouter;
     private final int maxProjects;
+    private DeliveryOutboxRepository deliveryOutbox;
+    private ObjectMapper objectMapper;
+    private Clock clock;
 
     @Autowired
     public AgentOrchestrator(AgentTaskService taskService, UnifiedQueryService unifiedQueryService,
                              TokenResolver tokenResolver, McpAdapter mcpAdapter, FeishuClient feishuClient,
                              AuditService auditService, ChainTraceService chainTraceService,
-                             ControlCommandRouter controlRouter, AppProperties properties) {
+                             ControlCommandRouter controlRouter, AppProperties properties,
+                             DeliveryOutboxRepository deliveryOutbox, ObjectMapper objectMapper, Clock clock) {
         this(taskService, unifiedQueryService, tokenResolver, mcpAdapter, feishuClient, auditService,
                 chainTraceService, controlRouter, properties.agent().maxProjectsPerQuery());
+        this.deliveryOutbox = deliveryOutbox;
+        this.objectMapper = objectMapper;
+        this.clock = clock;
     }
 
     AgentOrchestrator(AgentTaskService taskService, UnifiedQueryService unifiedQueryService,
@@ -50,9 +61,12 @@ public class AgentOrchestrator {
         this.chainTraceService = chainTraceService;
         this.controlRouter = controlRouter;
         this.maxProjects = maxProjects;
+        this.deliveryOutbox = null;
+        this.objectMapper = null;
+        this.clock = Clock.systemUTC();
     }
 
-    public boolean process(String requestId) {
+    public ProcessResult process(String requestId) {
         long started = System.currentTimeMillis();
         Map<String, Object> task = taskService.loadTask(requestId);
         String question = text(task, "message_text");
@@ -64,20 +78,26 @@ public class AgentOrchestrator {
         ControlCommandRouter.Command command = controlRouter.classify(question);
         if (command == ControlCommandRouter.Command.MCP_CONFIG_STATUS) {
             processMcpConfigStatus(requestId, question, messageId, chatId, openId, chatType, started);
-            return true;
+            return ProcessResult.success();
         }
         if (command == ControlCommandRouter.Command.CONFIG_HELP) {
             String answer = configurationHint();
             feishuClient.replyAnswerCard(messageId, question, answer, "配置说明", "orange");
             auditService.writeMain(requestId, openId, chatId, null, List.of(), question,
                     "system_config_help", answer, System.currentTimeMillis() - started, null);
-            return true;
+            return ProcessResult.success();
         }
 
         try {
             UnifiedQueryService.QueryResult result = unifiedQueryService.query(
-                    new UnifiedQueryService.QueryRequest(requestId, question, chatType, openId, chatId));
-            String title = "mcp_deepseek".equals(result.path()) ? "项目数据分析" : "DeepSeek 回答";
+                    new UnifiedQueryService.QueryRequest(requestId, question, chatType, openId, chatId,
+                            instant(task.get("created_at"))));
+            boolean partial = "hard_timeout".equals(result.stopReason())
+                    || "partial_coverage".equals(result.stopReason())
+                    || "deepseek_response_error".equals(result.stopReason())
+                    || !result.failures().isEmpty();
+            String title = partial ? "项目数据分析（部分结果）"
+                    : "mcp_deepseek".equals(result.path()) ? "项目数据分析" : "DeepSeek 回答";
             auditService.writeModel(requestId, result.model(), result.path(),
                     auditSummary(result),
                     result.presentationJson() == null ? result.answer() : result.presentationJson(),
@@ -86,8 +106,49 @@ public class AgentOrchestrator {
                     result.path(), result.answer(), result.presentationJson(), System.currentTimeMillis() - started,
                     result.failures().isEmpty() ? null : String.join("；", result.failures()));
             chainTraceService.save(requestId, traceFor(requestId, result));
-            feishuClient.replyAnswerFeedbackCard(messageId, requestId, question, result.presentation(), title, "blue");
-            return true;
+            writeTraceStatus(requestId);
+            try {
+                FeishuClient.DeliveryResult delivery;
+                if (deliveryOutbox != null && objectMapper != null) {
+                    Map<String, Object> payload = new LinkedHashMap<>();
+                    payload.put("messageId", messageId);
+                    payload.put("requestId", requestId);
+                    payload.put("question", question);
+                    payload.put("answer", result.answer());
+                    payload.put("presentationJson", result.presentationJson());
+                    payload.put("title", title);
+                    payload.put("template", partial ? "orange" : "blue");
+                    deliveryOutbox.enqueueOnce(requestId, DeliveryType.FINAL_RESULT,
+                            objectMapper.writeValueAsString(payload), clock.instant());
+                    delivery = null;
+                } else {
+                    delivery = feishuClient.replyAnswerFeedbackCard(
+                            messageId, requestId, question, result.presentation(), title, partial ? "orange" : "blue");
+                }
+                if (delivery != null && delivery.warning() != null) {
+                    auditService.writeMain(requestId, openId, chatId, null, result.projectsQueried(), question,
+                            result.path(), result.answer(), result.presentationJson(),
+                            System.currentTimeMillis() - started, delivery.warning());
+                }
+            } catch (Exception deliveryFailure) {
+                String error = "飞书消息发送失败：" + FeishuClient.deliveryFailureReason(deliveryFailure);
+                String notification = "AI 已完成回答，但飞书消息发送失败："
+                        + FeishuClient.deliveryFailureReason(deliveryFailure);
+                try {
+                    feishuClient.replyAnswerCard(messageId, question, notification, "飞书消息发送失败", "orange");
+                } catch (Exception ignored) {
+                    // 保留首次发送失败，避免补偿消息异常覆盖根因。
+                }
+                auditService.writeMain(requestId, openId, chatId, null, result.projectsQueried(), question,
+                        result.path(), result.answer(), result.presentationJson(),
+                        System.currentTimeMillis() - started, error);
+                auditService.updateProcessingLatency(requestId, System.currentTimeMillis() - started);
+                return ProcessResult.failed(error);
+            }
+            auditService.updateProcessingLatency(requestId, System.currentTimeMillis() - started);
+            return partial ? ProcessResult.partial(result.stopReason()) : ProcessResult.success();
+        } catch (UnifiedQueryService.QueryPendingException pending) {
+            return ProcessResult.pending(pending.resumeAfter());
         } catch (Exception e) {
             String error = readable(e);
             String answer = "AI 服务暂不可用，已记录本次请求，请稍后重试。";
@@ -101,8 +162,30 @@ public class AgentOrchestrator {
                     "ai_unavailable", answer, System.currentTimeMillis() - started, error);
             chainTraceService.save(requestId, failureTrace(requestId, error,
                     System.currentTimeMillis() - started, queryError));
-            return false;
+            writeTraceStatus(requestId);
+            auditService.updateProcessingLatency(requestId, System.currentTimeMillis() - started);
+            return ProcessResult.failed("AI 服务暂不可用");
         }
+    }
+
+    public record ProcessResult(boolean succeeded, String error, boolean partial,
+                                boolean pending, Duration resumeAfter) {
+        public static ProcessResult success() { return new ProcessResult(true, null, false, false, null); }
+        public static ProcessResult partial(String reason) {
+            return new ProcessResult(true, reason, true, false, null);
+        }
+        public static ProcessResult pending(Duration resumeAfter) {
+            return new ProcessResult(false, null, false, true, resumeAfter);
+        }
+        public static ProcessResult failed(String error) {
+            return new ProcessResult(false, error, false, false, null);
+        }
+    }
+
+    private void writeTraceStatus(String requestId) {
+        boolean incomplete = chainTraceService.eventTraceIncomplete(requestId);
+        auditService.writeTraceStatus(requestId, incomplete ? "PARTIAL" : "COMPLETE",
+                incomplete ? "部分追踪事件写入失败" : null);
     }
 
     private String auditSummary(UnifiedQueryService.QueryResult result) {
@@ -112,6 +195,8 @@ public class AgentOrchestrator {
                 + ", physicalMcpCalls=" + result.physicalMcpCalls()
                 + ", pages=" + result.pages()
                 + ", chunks=" + result.chunks()
+                + ", cacheHits=" + result.cacheHits()
+                + ", savedMcpCalls=" + result.cacheHits()
                 + ", projects=" + result.projectsQueried()
                 + ", partialFailure=" + !result.failures().isEmpty()
                 + ", inputTokens=" + result.inputTokens()
@@ -218,6 +303,8 @@ public class AgentOrchestrator {
         trace.summary.historyTurns = result.historyTurns();
         trace.summary.inputTokens = result.inputTokens();
         trace.summary.outputTokens = result.outputTokens();
+        trace.summary.cacheHits = result.cacheHits();
+        trace.summary.savedMcpCalls = result.cacheHits();
         trace.summary.stopReason = result.stopReason();
         trace.summary.toolsUsed = result.toolsUsed();
         trace.summary.projectsQueried = result.projectsQueried();
@@ -279,6 +366,12 @@ public class AgentOrchestrator {
     private String text(Map<String, Object> map, String key) {
         Object value = map.get(key);
         return value == null ? "" : String.valueOf(value);
+    }
+
+    private Instant instant(Object value) {
+        if (value instanceof java.sql.Timestamp timestamp) return timestamp.toInstant();
+        if (value instanceof Instant instant) return instant;
+        return null;
     }
 
     private String readable(Exception e) {

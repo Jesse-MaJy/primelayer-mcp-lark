@@ -19,7 +19,12 @@
     >
       <template #bodyCell="{ column, record, text }">
         <template v-if="column.key === 'status'">
-          <a-tag :color="statusColor(record.status)">{{ record.status || '-' }}</a-tag>
+          <a-space :size="4" wrap>
+            <a-tag :color="statusColor(record.status)">{{ record.status || '-' }}</a-tag>
+            <a-tag v-if="record.trace_completeness && record.trace_completeness !== 'COMPLETE'" color="orange">
+              Trace {{ record.trace_completeness }}
+            </a-tag>
+          </a-space>
         </template>
         <template v-else-if="column.key === 'message_text'">
           <span class="clamp">{{ text || '-' }}</span>
@@ -44,7 +49,7 @@
                     </a-tag>
                   </a-space>
                   <div style="margin-top: 8px; color: #667085; font-size: 12px">
-                    共 {{ record.tool_call_count ?? 0 }} 次调用，其中
+                    共 {{ record.business_mcp_call_count ?? record.tool_call_count ?? 0 }} 次业务调用，其中
                     {{ record.failed_tool_call_count ?? 0 }} 次失败
                   </div>
                   <a-button type="link" size="small" style="padding: 0; margin-top: 8px" @click.stop="openTrace(record.request_id)">
@@ -56,11 +61,23 @@
                 class="tool-tag"
                 :color="Number(record.failed_tool_call_count || 0) > 0 ? 'red' : 'blue'"
               >
-                工具 {{ record.tool_call_count ?? 0 }}
+                MCP {{ record.business_mcp_call_count ?? record.tool_call_count ?? 0 }}
               </a-tag>
             </a-popover>
-            <a-tag v-else>工具 0</a-tag>
+            <a-tag v-else>MCP 0</a-tag>
           </a-space>
+        </template>
+        <template v-else-if="column.key === 'usage'">
+          <div class="compact-metrics">
+            <span>Token {{ formatNumber(record.total_tokens) }}</span>
+            <span>返回 {{ formatNumber(record.returned_count) }} 条</span>
+          </div>
+        </template>
+        <template v-else-if="column.key === 'latency'">
+          <div class="compact-metrics">
+            <span>处理 {{ formatMs(record.processing_latency_ms ?? record.latency_ms) }}</span>
+            <span>排队 {{ formatMs(record.queue_latency_ms) }}</span>
+          </div>
         </template>
         <template v-else-if="column.key === 'feedback'">
           <a-space :size="4" wrap>
@@ -92,7 +109,7 @@
           </div>
           <div>
             <div class="detail-label">错误</div>
-            <pre>{{ record.task_error || record.audit_error || '-' }}</pre>
+            <pre>{{ record.audit_error || record.task_error || '-' }}</pre>
           </div>
           <div>
             <div class="detail-label">排查信息</div>
@@ -116,7 +133,7 @@
           </div>
           <div style="grid-column: 1 / -1; text-align: center; padding-top: 8px">
             <a-button type="primary" ghost size="small" @click="openTrace(record.request_id)">
-              🔗 查看 MCP 调用链路图
+              查看 MCP 调用链路图
             </a-button>
           </div>
         </div>
@@ -131,56 +148,7 @@
       :width="900"
       @close="drawerOpen = false"
     >
-      <a-spin :spinning="traceLoading" style="display: block">
-        <a-alert v-if="traceError" type="error" :message="traceError" showIcon style="margin-bottom: 16px" />
-
-        <template v-if="traceData">
-          <a-row :gutter="12" style="margin-bottom: 16px">
-            <a-col :span="6">
-              <a-card size="small" title="MCP 次数">
-                <strong>{{ traceData.summary?.totalMcpCalls ?? 0 }}</strong>
-              </a-card>
-            </a-col>
-            <a-col :span="6">
-              <a-card size="small" title="总页数">
-                <strong>{{ traceData.summary?.totalPages ?? 0 }}</strong>
-              </a-card>
-            </a-col>
-            <a-col :span="6">
-              <a-card size="small" title="总耗时">
-                <strong>{{ formatMs(traceData.summary?.totalLatencyMs) }}</strong>
-              </a-card>
-            </a-col>
-            <a-col :span="6">
-              <a-card size="small" title="工具">
-                <a-tag v-for="t in traceData.summary?.toolsUsed || []" :key="t" style="margin: 2px">{{ t }}</a-tag>
-                <span v-if="!traceData.summary?.toolsUsed?.length">-</span>
-              </a-card>
-            </a-col>
-          </a-row>
-
-          <a-card title="调用流程" size="small" style="margin-bottom: 12px">
-            <div ref="mermaidContainer" style="overflow-x: auto; min-height: 150px"></div>
-          </a-card>
-
-          <a-table :columns="nodeCols" :dataSource="traceData.nodes || []" rowKey="id" size="small" :pagination="false">
-            <template #bodyCell="{ column, record: node }">
-              <template v-if="column.key === 'type'">
-                <a-tag :color="node.type === 'model_call' ? 'blue' : 'green'">
-                  {{ node.type === 'model_call' ? '模型' : 'MCP' }}
-                </a-tag>
-              </template>
-              <template v-if="column.key === 'status'">
-                <a-tag :color="node.status === 'SUCCEEDED' ? 'green' : 'red'">{{ node.status }}</a-tag>
-              </template>
-              <template v-if="column.key === 'latency'">{{ formatMs(node.latencyMs) }}</template>
-              <template v-if="column.key === 'detail'">
-                <a-button type="link" size="small" @click="showNodeDetail(node)">详情</a-button>
-              </template>
-            </template>
-          </a-table>
-        </template>
-      </a-spin>
+      <TracePanel v-if="drawerOpen" :request-id="traceRequestId" />
     </a-drawer>
 
     <a-drawer
@@ -223,32 +191,15 @@
       </a-spin>
     </a-drawer>
 
-    <!-- Node detail modal -->
-    <a-modal v-model:open="nodeModalOpen" title="节点详情" :footer="null" width="800px">
-      <a-tabs>
-        <a-tab-pane key="input" tab="输入">
-          <pre class="json-block">{{ detailInput || '(无)' }}</pre>
-        </a-tab-pane>
-        <a-tab-pane key="output" tab="输出">
-          <pre class="json-block">{{ detailOutput || '(无)' }}</pre>
-        </a-tab-pane>
-        <a-tab-pane key="meta" tab="元信息">
-          <a-descriptions size="small" bordered :column="2">
-            <a-descriptions-item v-for="(v, k) in detailMeta" :key="String(k)" :label="String(k)">
-              {{ typeof v === 'object' ? JSON.stringify(v) : String(v) }}
-            </a-descriptions-item>
-          </a-descriptions>
-        </a-tab-pane>
-      </a-tabs>
-    </a-modal>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, nextTick } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { adminApi, type AnswerFeedbackDetail } from '../api/admin'
 import { formatChinaDateTime } from '../utils/time'
+import TracePanel from '../components/TracePanel.vue'
 
 const rows = ref<Record<string, unknown>[]>([])
 const loading = ref(false)
@@ -260,32 +211,16 @@ const columns = ref([
   { title: '会话', dataIndex: 'chat_type', width: 80, resizable: true, minWidth: 60, maxWidth: 200 },
   { title: '问题', dataIndex: 'message_text', key: 'message_text', width: 240, resizable: true, minWidth: 80, maxWidth: 800 },
   { title: 'Intent', dataIndex: 'intent', width: 140, resizable: true, minWidth: 80, maxWidth: 400 },
-  { title: '调用', key: 'counts', width: 150, resizable: true, minWidth: 80, maxWidth: 400 },
+  { title: '调用', key: 'counts', width: 170, resizable: true, minWidth: 80, maxWidth: 400 },
+  { title: 'Token / 数据', key: 'usage', width: 130, resizable: true, minWidth: 100, maxWidth: 260 },
   { title: '反馈', key: 'feedback', width: 210, resizable: true, minWidth: 150, maxWidth: 400 },
-  { title: '耗时', dataIndex: 'latency_ms', width: 90, resizable: true, minWidth: 60, maxWidth: 200, customRender: ({ text }: { text: unknown }) => text == null ? '-' : `${text} ms` },
+  { title: '耗时', key: 'latency', width: 135, resizable: true, minWidth: 100, maxWidth: 260 },
   { title: '回答', dataIndex: 'final_answer', key: 'final_answer', width: 300, resizable: true, minWidth: 80, maxWidth: 1000 }
 ])
 
 // Chain trace drawer
 const drawerOpen = ref(false)
-const traceLoading = ref(false)
-const traceError = ref('')
-const traceData = ref<Record<string, any> | null>(null)
-const mermaidContainer = ref<HTMLDivElement>()
-
-const nodeCols = [
-  { title: '节点', dataIndex: 'label', ellipsis: true },
-  { title: '类型', key: 'type', width: 60 },
-  { title: '状态', key: 'status', width: 70 },
-  { title: '耗时', key: 'latency', width: 70 },
-  { title: '详情', key: 'detail', width: 60 }
-]
-
-// Node detail modal
-const nodeModalOpen = ref(false)
-const detailInput = ref('')
-const detailOutput = ref('')
-const detailMeta = ref<Record<string, unknown>>({})
+const traceRequestId = ref('')
 
 const feedbackDrawerOpen = ref(false)
 const feedbackLoading = ref(false)
@@ -311,21 +246,9 @@ async function loadRows() {
   }
 }
 
-async function openTrace(requestId: unknown) {
+function openTrace(requestId: unknown) {
+  traceRequestId.value = String(requestId || '')
   drawerOpen.value = true
-  traceLoading.value = true
-  traceError.value = ''
-  traceData.value = null
-  try {
-    const data = await adminApi.getChainTrace(String(requestId))
-    traceData.value = data
-    await nextTick()
-    renderMermaid()
-  } catch (e: any) {
-    traceError.value = e?.message || '加载链调数据失败'
-  } finally {
-    traceLoading.value = false
-  }
 }
 
 async function openFeedback(record: Record<string, unknown>) {
@@ -342,58 +265,14 @@ async function openFeedback(record: Record<string, unknown>) {
   }
 }
 
-async function renderMermaid() {
-  if (!traceData.value || !mermaidContainer.value) return
-  try {
-    const mermaid = (await import('mermaid')).default
-    mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' })
-
-    const nodes: any[] = traceData.value.nodes || []
-    const edges: any[] = traceData.value.edges || []
-
-    let chart = 'graph TD\n'
-    for (const node of nodes) {
-      const label = String(node.label || node.id).replace(/[()]/g, '').replace(/"/g, "'")
-      chart += `  ${node.id}["${label}"]\n`
-      if (node.status === 'SUCCEEDED') {
-        chart += `  style ${node.id} fill:${node.type === 'model_call' ? '#e6f7ff' : '#f6ffed'},stroke:${node.type === 'model_call' ? '#1890ff' : '#52c41a'}\n`
-      } else {
-        chart += `  style ${node.id} fill:#fff2f0,stroke:#ff4d4f\n`
-      }
-    }
-    for (const edge of edges) {
-      chart += `  ${edge.from} --> ${edge.to}\n`
-    }
-
-    const { svg } = await mermaid.render('mermaid-msg-chart', chart)
-    mermaidContainer.value.innerHTML = svg
-  } catch (e: any) {
-    console.error('Mermaid render failed:', e)
-    if (mermaidContainer.value) {
-      mermaidContainer.value.innerHTML = '<p style="color:red">流程图渲染失败</p>'
-    }
-  }
-}
-
-function showNodeDetail(node: any) {
-  detailInput.value = formatJson(node.input || node.request || '')
-  detailOutput.value = formatJson(node.output || node.response || '')
-  detailMeta.value = { ...node }
-  delete (detailMeta.value as any).input
-  delete (detailMeta.value as any).output
-  delete (detailMeta.value as any).request
-  delete (detailMeta.value as any).response
-  nodeModalOpen.value = true
-}
-
-function formatJson(value: string): string {
-  if (!value) return ''
-  try { return JSON.stringify(JSON.parse(value), null, 2) } catch { return value }
-}
-
-function formatMs(ms: number | undefined): string {
+function formatMs(value: unknown): string {
+  const ms = Number(value || 0)
   if (!ms) return '-'
   return ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : ms + 'ms'
+}
+
+function formatNumber(value: unknown): string {
+  return new Intl.NumberFormat('zh-CN').format(Number(value || 0))
 }
 
 function statusColor(status: unknown) {
@@ -411,7 +290,15 @@ function diagnosticText(record: Record<string, unknown>) {
     `chat_id: ${record.feishu_chat_id || '-'}`,
     `primelayer_user_id: ${record.primelayer_user_id || '-'}`,
     `model_calls: ${record.model_call_count ?? 0}`,
-    `tool_calls: ${record.tool_call_count ?? 0}`,
+    `business_mcp_calls: ${record.business_mcp_call_count ?? record.tool_call_count ?? 0}`,
+    `tool_discovery_calls: ${record.tool_discovery_count ?? 0}`,
+    `returned_count: ${record.returned_count ?? 0}`,
+    `input_tokens: ${record.input_tokens ?? 0}`,
+    `output_tokens: ${record.output_tokens ?? 0}`,
+    `total_tokens: ${record.total_tokens ?? 0}`,
+    `processing_latency: ${formatMs(record.processing_latency_ms ?? record.latency_ms)}`,
+    `queue_latency: ${formatMs(record.queue_latency_ms)}`,
+    `trace_completeness: ${record.trace_completeness || '-'}`,
     `failed_tool_calls: ${record.failed_tool_call_count ?? 0}`,
     `tool_names: ${record.tool_names || '-'}`,
     `started_at: ${formatChinaDateTime(record.started_at)}`,
@@ -435,6 +322,7 @@ onMounted(loadRows)
 .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px }
 .detail-label { font-weight: 600; margin-bottom: 6px }
 .muted { color: #98a2b3 }
+.compact-metrics { display: flex; flex-direction: column; gap: 2px; color: #475569; font-size: 12px; line-height: 1.4 }
 .feedback-detail { max-height: 180px }
 pre { margin: 0; white-space: pre-wrap; word-break: break-word; background: #f7f8fa; border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px; max-height: 260px; overflow: auto }
 .json-block { background: #f5f5f5; padding: 16px; border-radius: 4px; max-height: 500px; overflow: auto; white-space: pre-wrap; word-break: break-all; font-size: 12px; line-height: 1.5; margin: 0 }

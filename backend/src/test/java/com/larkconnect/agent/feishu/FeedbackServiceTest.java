@@ -62,7 +62,8 @@ class FeedbackServiceTest {
         verify(repository, never()).upsert(any());
         verify(feishuClient).buildAnswerFeedbackCard(
                 org.mockito.ArgumentMatchers.eq("req-1"), org.mockito.ArgumentMatchers.eq("问题"),
-                org.mockito.ArgumentMatchers.argThat((AnswerPresentation value) -> value.markdown().equals("## 回答")),
+                org.mockito.ArgumentMatchers.argThat((AnswerPresentation value) ->
+                        value.blocks().get(0).markdown().equals("## 回答")),
                 org.mockito.ArgumentMatchers.eq("项目数据分析"), org.mockito.ArgumentMatchers.eq("blue"),
                 org.mockito.ArgumentMatchers.eq(FeishuClient.AnswerFeedbackView.reasons())
         );

@@ -10,9 +10,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 @Component
@@ -30,7 +33,10 @@ public class FeishuClient {
                         FeishuAnswerCardRenderer cardRenderer) {
         this.properties = properties;
         this.objectMapper = objectMapper;
-        this.restClient = builder.baseUrl("https://open.feishu.cn").build();
+        SimpleClientHttpRequestFactory requests = new SimpleClientHttpRequestFactory();
+        requests.setConnectTimeout(properties.agent().modelTimeoutMs());
+        requests.setReadTimeout(properties.agent().modelTimeoutMs());
+        this.restClient = builder.requestFactory(requests).baseUrl("https://open.feishu.cn").build();
         this.cardRenderer = cardRenderer;
     }
 
@@ -114,15 +120,36 @@ public class FeishuClient {
         assertFeishuOk(response, "reply message");
     }
 
-    public void replyAnswerCard(String messageId, String question, String answer) {
-        replyAnswerCard(messageId, question, answer, DEFAULT_AI_TITLE, "blue");
+    public void addReaction(String messageId, String emojiType) {
+        if (!isConfigured()) {
+            log.info("Feishu app is not configured. Would add reaction {} to {}", emojiType, messageId);
+            return;
+        }
+        Map<String, Object> response;
+        try {
+            response = restClient.post()
+                    .uri("/open-apis/im/v1/messages/{messageId}/reactions", messageId)
+                    .header("Authorization", "Bearer " + tenantAccessToken())
+                    .body(Map.of(
+                            "reaction_type", Map.of("emoji_type", emojiType)
+                    ))
+                    .retrieve()
+                    .body(Map.class);
+        } catch (RestClientResponseException e) {
+            throw translateHttpFailure(e, "add message reaction");
+        }
+        assertFeishuOk(response, "add message reaction");
     }
 
-    public void replyAnswerCard(String messageId, String question, String answer, String title, String template) {
-        replyAnswerCard(messageId, question, answer, title, template, List.of(), List.of());
+    public String replyAnswerCard(String messageId, String question, String answer) {
+        return replyAnswerCard(messageId, question, answer, DEFAULT_AI_TITLE, "blue");
     }
 
-    public void replyAnswerCard(
+    public String replyAnswerCard(String messageId, String question, String answer, String title, String template) {
+        return replyAnswerCard(messageId, question, answer, title, template, List.of(), List.of());
+    }
+
+    public String replyAnswerCard(
             String messageId,
             String question,
             String answer,
@@ -132,33 +159,47 @@ public class FeishuClient {
             List<Map<String, Object>> visualElements
     ) {
         try {
-            replyCard(messageId, buildAnswerCard(question, answer, title, template, metrics, visualElements));
+            return responseMessageId(replyCard(messageId,
+                    buildAnswerCard(question, answer, title, template, metrics, visualElements)));
         } catch (FeishuApiException e) {
             if (!e.cardContentError()) throw e;
-            replyCard(messageId, cardRenderer.markdownOnlyCard(question, answer, title, template));
+            return responseMessageId(replyCard(messageId,
+                    cardRenderer.markdownOnlyCard(question, answer, title, template)));
         }
     }
 
-    public void replyAnswerFeedbackCard(String messageId, String requestId, String question, String answer,
-                                        String title, String template) {
-        replyPresentationWithFallback(messageId, requestId, question, AnswerPresentation.markdownOnly(answer),
+    public DeliveryResult replyAnswerFeedbackCard(String messageId, String requestId, String question, String answer,
+                                                  String title, String template) {
+        return replyPresentationWithFallback(messageId, requestId, question, AnswerPresentation.markdownOnly(answer),
                 title, template);
     }
 
-    public void replyAnswerFeedbackCard(String messageId, String requestId, String question,
-                                        AnswerPresentation presentation, String title, String template) {
-        replyPresentationWithFallback(messageId, requestId, question, presentation, title, template);
+    public DeliveryResult replyAnswerFeedbackCard(String messageId, String requestId, String question,
+                                                  AnswerPresentation presentation, String title, String template) {
+        return replyPresentationWithFallback(messageId, requestId, question, presentation, title, template);
     }
 
-    private void replyPresentationWithFallback(String messageId, String requestId, String question,
-                                               AnswerPresentation presentation, String title, String template) {
+    private DeliveryResult replyPresentationWithFallback(String messageId, String requestId, String question,
+                                                         AnswerPresentation presentation, String title, String template) {
         try {
-            replyCard(messageId, buildAnswerFeedbackCard(
-                    requestId, question, presentation, title, template, AnswerFeedbackView.initial()));
+            String sentMessageId = responseMessageId(replyCard(messageId, buildAnswerFeedbackCard(
+                    requestId, question, presentation, title, template, AnswerFeedbackView.initial())));
+            return DeliveryResult.direct(sentMessageId);
         } catch (FeishuApiException e) {
             if (!e.cardContentError()) throw e;
-            replyCard(messageId, cardRenderer.markdownOnlyCard(question, presentation.plainText(), title, template));
+            String sentMessageId = responseMessageId(replyCard(messageId,
+                    cardRenderer.markdownOnlyCard(question, presentation.plainText(), title, template)));
+            return DeliveryResult.fallback("飞书结构化卡片发送失败，已降级为 Markdown："
+                    + deliveryFailureReason(e), sentMessageId);
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private String responseMessageId(Map<String, Object> response) {
+        if (response == null) return null;
+        Object data = response.get("data");
+        if (data instanceof Map<?, ?> map && map.get("message_id") != null) return String.valueOf(map.get("message_id"));
+        return response.get("message_id") == null ? null : String.valueOf(response.get("message_id"));
     }
 
     public void replyWelcomeCard(String messageId) {
@@ -186,15 +227,20 @@ public class FeishuClient {
             return Map.of("ok", false, "error", "Feishu App ID 或 App Secret 未配置");
         }
         String content = toJson(card);
-        Map<String, Object> response = restClient.post()
-                .uri("/open-apis/im/v1/messages/{messageId}/reply", messageId)
-                .header("Authorization", "Bearer " + tenantAccessToken())
-                .body(Map.of(
-                        "msg_type", "interactive",
-                        "content", content
-                ))
-                .retrieve()
-                .body(Map.class);
+        Map<String, Object> response;
+        try {
+            response = restClient.post()
+                    .uri("/open-apis/im/v1/messages/{messageId}/reply", messageId)
+                    .header("Authorization", "Bearer " + tenantAccessToken())
+                    .body(Map.of(
+                            "msg_type", "interactive",
+                            "content", content
+                    ))
+                    .retrieve()
+                    .body(Map.class);
+        } catch (RestClientResponseException e) {
+            throw translateHttpFailure(e, "reply card message");
+        }
         assertFeishuOk(response, "reply card message");
         return response == null ? Map.of() : response;
     }
@@ -204,19 +250,24 @@ public class FeishuClient {
             return Map.of("ok", false, "error", "Feishu App ID 或 App Secret 未配置");
         }
         String content = toJson(card);
-        Map<String, Object> response = restClient.post()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/open-apis/im/v1/messages")
-                        .queryParam("receive_id_type", receiveIdType)
-                        .build())
-                .header("Authorization", "Bearer " + tenantAccessToken())
-                .body(Map.of(
-                        "receive_id", receiveId,
-                        "msg_type", "interactive",
-                        "content", content
-                ))
-                .retrieve()
-                .body(Map.class);
+        Map<String, Object> response;
+        try {
+            response = restClient.post()
+                    .uri(uriBuilder -> uriBuilder
+                            .path("/open-apis/im/v1/messages")
+                            .queryParam("receive_id_type", receiveIdType)
+                            .build())
+                    .header("Authorization", "Bearer " + tenantAccessToken())
+                    .body(Map.of(
+                            "receive_id", receiveId,
+                            "msg_type", "interactive",
+                            "content", content
+                    ))
+                    .retrieve()
+                    .body(Map.class);
+        } catch (RestClientResponseException e) {
+            throw translateHttpFailure(e, "send card message");
+        }
         assertFeishuOk(response, "send card message");
         return response == null ? Map.of() : response;
     }
@@ -446,6 +497,30 @@ public class FeishuClient {
         }
     }
 
+    FeishuApiException translateHttpFailure(RestClientResponseException error, String action) {
+        JsonNode root = parseSafely(error.getResponseBodyAsString());
+        int code = root.path("code").asInt(error.getStatusCode().value());
+        String message = root.path("msg").asText(error.getStatusText());
+        return new FeishuApiException(code, message, action, error);
+    }
+
+    public static String deliveryFailureReason(Throwable error) {
+        String message = error == null || error.getMessage() == null || error.getMessage().isBlank()
+                ? "未知飞书错误" : error.getMessage();
+        if (message.toLowerCase(Locale.ROOT).contains("card table number over limit")) {
+            return "卡片表格数量超过飞书上限（最多 5 个）";
+        }
+        return message;
+    }
+
+    private JsonNode parseSafely(String value) {
+        try {
+            return objectMapper.readTree(value == null ? "" : value);
+        } catch (Exception ignored) {
+            return objectMapper.createObjectNode();
+        }
+    }
+
     private String toJson(Object value) {
         try {
             return objectMapper.writeValueAsString(value);
@@ -461,7 +536,11 @@ public class FeishuClient {
         private final String feishuMessage;
 
         FeishuApiException(int code, String feishuMessage, String action) {
-            super("Feishu " + action + " failed: code=" + code + ", msg=" + feishuMessage);
+            this(code, feishuMessage, action, null);
+        }
+
+        FeishuApiException(int code, String feishuMessage, String action, Throwable cause) {
+            super("Feishu " + action + " failed: code=" + code + ", msg=" + feishuMessage, cause);
             this.code = code;
             this.feishuMessage = feishuMessage == null ? "" : feishuMessage;
         }
@@ -474,6 +553,16 @@ public class FeishuClient {
         }
 
         int code() { return code; }
+    }
+
+    public record DeliveryResult(boolean fallbackUsed, String warning, String messageId) {
+        public DeliveryResult(boolean fallbackUsed, String warning) { this(fallbackUsed, warning, null); }
+        public static DeliveryResult direct() { return direct(null); }
+        public static DeliveryResult direct(String messageId) { return new DeliveryResult(false, null, messageId); }
+        public static DeliveryResult fallback(String warning) { return fallback(warning, null); }
+        public static DeliveryResult fallback(String warning, String messageId) {
+            return new DeliveryResult(true, warning, messageId);
+        }
     }
 
     public record CardMetric(String label, String value) {}

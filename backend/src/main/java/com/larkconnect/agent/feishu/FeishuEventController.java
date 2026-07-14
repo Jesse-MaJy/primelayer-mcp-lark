@@ -65,12 +65,22 @@ public class FeishuEventController {
         }
         log.info("Parsed Feishu message: messageId={}, chatType={}, chatId={}, openId={}, text={}",
                 message.messageId(), message.chatType(), message.chatId(), message.openId(), message.text());
+        addGetReaction(message.messageId());
         if ("p2p".equals(message.chatType()) && isStartupKeyword(message.text())) {
             feishuClient.replyWelcomeCard(message.messageId());
             return ApiResponse.ok("welcome_sent");
         }
         taskService.createAndPublish(message);
         return ApiResponse.ok("accepted");
+    }
+
+    private void addGetReaction(String messageId) {
+        try {
+            feishuClient.addReaction(messageId, "Get");
+        } catch (RuntimeException e) {
+            log.warn("Failed to add Get reaction to Feishu message. messageId={}, error={}",
+                    messageId, e.getMessage());
+        }
     }
 
     @PostMapping("/card-events")

@@ -43,6 +43,27 @@ class McpToolDefinitionMapperTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    @Test
+    void removesServerManagedArgumentsFromModelVisibleRequiredSchema() {
+        McpToolDefinitionMapper.MappedTools mapped = mapper.map(List.of(Map.of(
+                "name", "match_form_resource",
+                "inputSchema", Map.of(
+                        "type", "object",
+                        "required", List.of("name", "project_id", "primelayer_user_id"),
+                        "properties", Map.of(
+                                "name", Map.of("type", "string"),
+                                "project_id", Map.of("type", "string"),
+                                "primelayer_user_id", Map.of("type", "string"))))));
+
+        Map<String, Object> function = cast(mapped.deepSeekTools().get(0).get("function"));
+        Map<String, Object> parameters = cast(function.get("parameters"));
+        Map<String, Object> arguments = cast(cast(parameters.get("properties")).get("arguments"));
+
+        assertThat(((List<?>) arguments.get("required")).stream().map(String::valueOf).toList())
+                .containsExactly("name");
+        assertThat(cast(arguments.get("properties"))).containsOnlyKeys("name");
+    }
+
     @SuppressWarnings("unchecked")
     private static Map<String, Object> cast(Object value) {
         return (Map<String, Object>) value;

@@ -25,18 +25,23 @@ public class FeishuAnswerCardRenderer {
         elements.add(divider());
         elements.add(markdown("**问题**\n" + text(question)));
         elements.add(divider());
-        elements.add(markdown(safe.markdown()));
-        for (AnswerPresentation.AnswerTable table : safe.tables()) {
-            elements.add(divider());
-            elements.add(markdown("### " + table.title()));
-            if (table.totalRows() > table.rows().size()) {
-                elements.add(plain("共 " + table.totalRows() + " 条，仅展示前 20 条"));
+        for (AnswerPresentation.ContentBlock block : safe.blocks()) {
+            switch (block.type()) {
+                case MARKDOWN -> elements.add(markdown(block.markdown()));
+                case TABLE -> {
+                    AnswerPresentation.AnswerTable table = block.table();
+                    elements.add(divider());
+                    elements.add(markdown("### " + table.title()));
+                    if (table.totalRows() > table.rows().size()) {
+                        elements.add(plain("共 " + table.totalRows() + " 条，仅展示前 20 条"));
+                    }
+                    elements.add(table(table));
+                }
+                case CHART -> {
+                    elements.add(divider());
+                    elements.add(chart(block.chart()));
+                }
             }
-            elements.add(table(table));
-        }
-        for (AnswerPresentation.AnswerChart chart : safe.charts()) {
-            elements.add(divider());
-            elements.add(chart(chart));
         }
         if (feedbackView != null && requestId != null && !requestId.isBlank()) {
             elements.add(divider());

@@ -33,6 +33,19 @@ app:
     max-projects-per-query: 20
     model-timeout-ms: 30000
     mcp-timeout-ms: 30000
+    query-progress-notice-ms: 900000
+    query-hard-timeout-ms: 1800000
+    query-page-batch-size: 5
+    max-no-progress-decisions: 3
+    model-input-token-budget: 256000
+    async-poll-initial-delay-ms: 1000
+    async-poll-max-delay-ms: 30000
+    form-analysis-timeout-ms: 90000
+    final-answer-timeout-ms: 60000
+    max-planning-rounds: 2
+    max-logical-tool-calls: 32
+    max-candidate-forms: 10
+    max-stage-planning-calls: 5
   feishu:
     app-id: ${FEISHU_APP_ID:}
     app-secret: ${FEISHU_APP_SECRET:}

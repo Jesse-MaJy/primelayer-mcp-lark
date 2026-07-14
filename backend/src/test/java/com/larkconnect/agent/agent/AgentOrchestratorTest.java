@@ -39,6 +39,7 @@ class AgentOrchestratorTest {
                 any(AnswerPresentation.class),
                 eq("项目数据分析"), eq("blue"));
         verify(traces).save(eq("r1"), any());
+        verify(audit).updateProcessingLatency(eq("r1"), any(Long.class));
         verify(audit).writeModel(eq("r1"), eq("deepseek-v4-pro"), eq("mcp_deepseek"),
                 argThat(summary -> summary.contains("physicalMcpCalls=2")
                         && summary.contains("pages=2")
@@ -84,11 +85,66 @@ class AgentOrchestratorTest {
         when(tasks.loadTask("r3")).thenReturn(task("分析项目"));
         when(unified.query(any())).thenThrow(new IllegalStateException("DeepSeek unavailable"));
 
-        boolean succeeded = orchestrator(tasks, unified, feishu, audit, traces).process("r3");
+        AgentOrchestrator.ProcessResult outcome = orchestrator(tasks, unified, feishu, audit, traces).process("r3");
 
-        assertThat(succeeded).isFalse();
+        assertThat(outcome.succeeded()).isFalse();
+        assertThat(outcome.error()).isEqualTo("AI 服务暂不可用");
         verify(feishu).replyAnswerCard("m1", "分析项目", "AI 服务暂不可用，已记录本次请求，请稍后重试。", "AI 服务异常", "orange");
         verify(traces).save(eq("r3"), any());
+    }
+
+    @Test
+    void marksRecoveredDeepSeekResponseFailureAsPartialInsteadOfFailed() {
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        UnifiedQueryService unified = mock(UnifiedQueryService.class);
+        FeishuClient feishu = mock(FeishuClient.class);
+        AuditService audit = mock(AuditService.class);
+        ChainTraceService traces = mock(ChainTraceService.class);
+        when(tasks.loadTask("r-partial")).thenReturn(task("分析项目"));
+        UnifiedQueryService.QueryResult partial = new UnifiedQueryService.QueryResult(
+                "mcp_deepseek", "已取得数据的部分结果", AnswerPresentation.markdownOnly("部分结果"),
+                null, "deepseek-v4-pro", 1, 1, 1, 1, 0, 0,
+                List.of("query_tasks"), List.of("P1"), List.of("DeepSeek 响应解析失败"),
+                "deepseek_response_error", 20, 10, 0, 100);
+        when(unified.query(any())).thenReturn(partial);
+
+        AgentOrchestrator.ProcessResult outcome = orchestrator(tasks, unified, feishu, audit, traces)
+                .process("r-partial");
+
+        assertThat(outcome.succeeded()).isTrue();
+        assertThat(outcome.partial()).isTrue();
+        verify(feishu).replyAnswerFeedbackCard(eq("m1"), eq("r-partial"), eq("分析项目"),
+                any(AnswerPresentation.class), eq("项目数据分析（部分结果）"), eq("orange"));
+    }
+
+    @Test
+    void reportsFeishuDeliveryFailureWithoutOverwritingSuccessfulAiResult() {
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        UnifiedQueryService unified = mock(UnifiedQueryService.class);
+        FeishuClient feishu = mock(FeishuClient.class);
+        AuditService audit = mock(AuditService.class);
+        ChainTraceService traces = mock(ChainTraceService.class);
+        when(tasks.loadTask("r-send")).thenReturn(task("分析项目"));
+        when(unified.query(any())).thenReturn(result("mcp_deepseek", "风险分析完成"));
+        when(feishu.replyAnswerFeedbackCard(
+                eq("m1"), eq("r-send"), eq("分析项目"), any(AnswerPresentation.class),
+                eq("项目数据分析"), eq("blue")))
+                .thenThrow(new IllegalStateException("card table number over limit"));
+
+        AgentOrchestrator.ProcessResult outcome = orchestrator(tasks, unified, feishu, audit, traces).process("r-send");
+
+        assertThat(outcome.succeeded()).isFalse();
+        assertThat(outcome.error()).isEqualTo(
+                "飞书消息发送失败：卡片表格数量超过飞书上限（最多 5 个）");
+        verify(audit, never()).writeModel(any(), any(), eq("unified_query"), any(), any(),
+                eq("FAILED"), any(Long.class), any());
+        verify(audit).writeMain(eq("r-send"), eq("u1"), eq("c1"), eq(null), eq(List.of("P1")),
+                eq("分析项目"), eq("mcp_deepseek"), eq("风险分析完成"),
+                eq("{\"plainText\":\"风险分析完成\"}"), any(Long.class),
+                eq("飞书消息发送失败：卡片表格数量超过飞书上限（最多 5 个）"));
+        verify(feishu).replyAnswerCard("m1", "分析项目",
+                "AI 已完成回答，但飞书消息发送失败：卡片表格数量超过飞书上限（最多 5 个）",
+                "飞书消息发送失败", "orange");
     }
 
     private AgentOrchestrator orchestrator(AgentTaskService tasks, UnifiedQueryService unified,
@@ -103,7 +159,8 @@ class AgentOrchestratorTest {
     }
 
     private UnifiedQueryService.QueryResult result(String path, String answer) {
-        AnswerPresentation presentation = new AnswerPresentation(answer, "## " + answer, List.of(), List.of());
+        AnswerPresentation presentation = new AnswerPresentation(answer,
+                List.of(AnswerPresentation.ContentBlock.markdown("## " + answer)));
         String json = "{\"plainText\":\"" + answer + "\"}";
         return new UnifiedQueryService.QueryResult(path, answer, presentation, json, "deepseek-v4-pro",
                 1, 2, 2, 2, 0, 0, List.of("query_tasks"), List.of("P1"), List.of(), null, 20, 10, 100);

@@ -16,6 +16,7 @@ import java.util.Set;
 @Component
 public class AnswerPresentationParser {
     static final int MAX_TABLE_ROWS = 20;
+    static final int MAX_TABLES = 5;
     static final int MAX_CHARTS = 3;
     static final int MAX_CHART_POINTS = 50;
     private final ObjectMapper objectMapper;
@@ -30,10 +31,11 @@ public class AnswerPresentationParser {
             JsonNode root = objectMapper.readTree(json);
             if (!root.isObject()) return fallback(fallback);
             String plainText = truncate(clean(root.path("plainText").asText(null), fallback), 10_000);
-            String markdown = truncate(safeMarkdown(clean(root.path("markdown").asText(null), plainText)), 10_000);
-            AnswerPresentation value = new AnswerPresentation(
-                    plainText, markdown, parseTables(root.path("tables")), parseCharts(root.path("charts")));
-            return new ParsedPresentation(value, objectMapper.writeValueAsString(value), false);
+            List<AnswerPresentation.ContentBlock> blocks = root.path("blocks").isArray()
+                    ? parseBlocks(root.path("blocks")) : parseLegacyBlocks(root, plainText);
+            if (blocks.isEmpty()) blocks = List.of(AnswerPresentation.ContentBlock.markdown(plainText));
+            AnswerPresentation value = new AnswerPresentation(plainText, blocks);
+            return new ParsedPresentation(value, toJson(value), false);
         } catch (Exception ignored) {
             return fallback(fallback);
         }
@@ -41,40 +43,112 @@ public class AnswerPresentationParser {
 
     public String toJson(AnswerPresentation presentation) {
         try {
-            return objectMapper.writeValueAsString(presentation);
+            Map<String, Object> root = new LinkedHashMap<>();
+            root.put("plainText", presentation.plainText());
+            root.put("blocks", presentation.blocks().stream().map(this::blockJson).toList());
+            return objectMapper.writeValueAsString(root);
         } catch (Exception e) {
             throw new IllegalStateException("无法序列化回答展示结构", e);
         }
+    }
+
+    private Map<String, Object> blockJson(AnswerPresentation.ContentBlock block) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("type", block.type().name().toLowerCase(Locale.ROOT));
+        switch (block.type()) {
+            case MARKDOWN -> value.put("content", block.markdown());
+            case TABLE -> {
+                value.put("title", block.table().title());
+                value.put("totalRows", block.table().totalRows());
+                value.put("columns", block.table().columns());
+                value.put("rows", block.table().rows());
+            }
+            case CHART -> {
+                value.put("title", block.chart().title());
+                value.put("chartType", block.chart().type().name().toLowerCase(Locale.ROOT));
+                value.put("series", block.chart().series());
+            }
+        }
+        return value;
+    }
+
+    private List<AnswerPresentation.ContentBlock> parseBlocks(JsonNode node) {
+        List<AnswerPresentation.ContentBlock> blocks = new ArrayList<>();
+        int tableCount = 0;
+        int chartCount = 0;
+        for (JsonNode block : node) {
+            String type = block.path("type").asText("").toLowerCase(Locale.ROOT);
+            switch (type) {
+                case "markdown" -> {
+                    String content = block.path("content").asText("").trim();
+                    if (!content.isEmpty()) blocks.add(AnswerPresentation.ContentBlock.markdown(
+                            truncate(safeMarkdown(content), 10_000)));
+                }
+                case "table" -> {
+                    if (tableCount >= MAX_TABLES) continue;
+                    AnswerPresentation.AnswerTable table = parseTable(block);
+                    if (table != null) {
+                        blocks.add(AnswerPresentation.ContentBlock.table(table));
+                        tableCount++;
+                    }
+                }
+                case "chart" -> {
+                    if (chartCount >= MAX_CHARTS) continue;
+                    AnswerPresentation.AnswerChart chart = parseChart(block, "chartType");
+                    if (chart != null) {
+                        blocks.add(AnswerPresentation.ContentBlock.chart(chart));
+                        chartCount++;
+                    }
+                }
+                default -> { }
+            }
+        }
+        return List.copyOf(blocks);
+    }
+
+    private List<AnswerPresentation.ContentBlock> parseLegacyBlocks(JsonNode root, String plainText) {
+        List<AnswerPresentation.ContentBlock> blocks = new ArrayList<>();
+        String markdown = truncate(safeMarkdown(clean(root.path("markdown").asText(null), plainText)), 10_000);
+        blocks.add(AnswerPresentation.ContentBlock.markdown(markdown));
+        parseTables(root.path("tables")).forEach(table -> blocks.add(AnswerPresentation.ContentBlock.table(table)));
+        parseCharts(root.path("charts")).forEach(chart -> blocks.add(AnswerPresentation.ContentBlock.chart(chart)));
+        return List.copyOf(blocks);
     }
 
     private List<AnswerPresentation.AnswerTable> parseTables(JsonNode node) {
         if (!node.isArray()) return List.of();
         List<AnswerPresentation.AnswerTable> tables = new ArrayList<>();
         for (JsonNode table : node) {
-            List<AnswerPresentation.TableColumn> columns = new ArrayList<>();
-            Set<String> keys = new LinkedHashSet<>();
-            for (JsonNode column : table.path("columns")) {
-                String key = column.path("key").asText("").trim();
-                String label = column.path("label").asText("").trim();
-                if (!key.isEmpty() && !label.isEmpty() && keys.add(key) && columns.size() < 8) {
-                    columns.add(new AnswerPresentation.TableColumn(key, label));
-                }
-            }
-            if (columns.isEmpty()) continue;
-            List<Map<String, String>> rows = new ArrayList<>();
-            for (JsonNode row : table.path("rows")) {
-                if (!row.isObject() || rows.size() >= MAX_TABLE_ROWS) break;
-                Map<String, String> values = new LinkedHashMap<>();
-                for (AnswerPresentation.TableColumn column : columns) {
-                    values.put(column.key(), truncate(row.path(column.key()).asText(""), 1_000));
-                }
-                rows.add(values);
-            }
-            int totalRows = Math.max(table.path("totalRows").asInt(rows.size()), rows.size());
-            tables.add(new AnswerPresentation.AnswerTable(
-                    clean(table.path("title").asText(null), "明细"), columns, rows, totalRows));
+            if (tables.size() >= MAX_TABLES) break;
+            AnswerPresentation.AnswerTable parsed = parseTable(table);
+            if (parsed != null) tables.add(parsed);
         }
         return List.copyOf(tables);
+    }
+
+    private AnswerPresentation.AnswerTable parseTable(JsonNode table) {
+        List<AnswerPresentation.TableColumn> columns = new ArrayList<>();
+        Set<String> keys = new LinkedHashSet<>();
+        for (JsonNode column : table.path("columns")) {
+            String key = column.path("key").asText("").trim();
+            String label = column.path("label").asText("").trim();
+            if (!key.isEmpty() && !label.isEmpty() && keys.add(key) && columns.size() < 8) {
+                columns.add(new AnswerPresentation.TableColumn(key, label));
+            }
+        }
+        if (columns.isEmpty()) return null;
+        List<Map<String, String>> rows = new ArrayList<>();
+        for (JsonNode row : table.path("rows")) {
+            if (!row.isObject() || rows.size() >= MAX_TABLE_ROWS) break;
+            Map<String, String> values = new LinkedHashMap<>();
+            for (AnswerPresentation.TableColumn column : columns) {
+                values.put(column.key(), truncate(row.path(column.key()).asText(""), 1_000));
+            }
+            rows.add(values);
+        }
+        int totalRows = Math.max(table.path("totalRows").asInt(rows.size()), rows.size());
+        return new AnswerPresentation.AnswerTable(
+                clean(table.path("title").asText(null), "明细"), columns, rows, totalRows);
     }
 
     private List<AnswerPresentation.AnswerChart> parseCharts(JsonNode node) {
@@ -82,31 +156,34 @@ public class AnswerPresentationParser {
         List<AnswerPresentation.AnswerChart> charts = new ArrayList<>();
         for (JsonNode chart : node) {
             if (charts.size() >= MAX_CHARTS) break;
-            AnswerPresentation.ChartType type = chartType(chart.path("type").asText());
-            if (type == null) continue;
-            List<AnswerPresentation.ChartSeries> series = new ArrayList<>();
-            for (JsonNode rawSeries : chart.path("series")) {
-                List<AnswerPresentation.ChartPoint> points = new ArrayList<>();
-                Set<String> labels = new LinkedHashSet<>();
-                for (JsonNode point : rawSeries.path("points")) {
-                    if (points.size() >= MAX_CHART_POINTS) break;
-                    String label = point.path("label").asText("").trim();
-                    BigDecimal value = decimal(point.path("value"));
-                    if (!label.isEmpty() && value != null && labels.add(label)) {
-                        points.add(new AnswerPresentation.ChartPoint(label, value));
-                    }
-                }
-                if (!points.isEmpty()) {
-                    series.add(new AnswerPresentation.ChartSeries(
-                            clean(rawSeries.path("name").asText(null), "数值"), points));
-                }
-            }
-            if (!series.isEmpty()) {
-                charts.add(new AnswerPresentation.AnswerChart(
-                        clean(chart.path("title").asText(null), "数据图表"), type, series));
-            }
+            AnswerPresentation.AnswerChart parsed = parseChart(chart, "type");
+            if (parsed != null) charts.add(parsed);
         }
         return List.copyOf(charts);
+    }
+
+    private AnswerPresentation.AnswerChart parseChart(JsonNode chart, String typeField) {
+        AnswerPresentation.ChartType type = chartType(chart.path(typeField).asText());
+        if (type == null) return null;
+        List<AnswerPresentation.ChartSeries> series = new ArrayList<>();
+        for (JsonNode rawSeries : chart.path("series")) {
+            List<AnswerPresentation.ChartPoint> points = new ArrayList<>();
+            Set<String> labels = new LinkedHashSet<>();
+            for (JsonNode point : rawSeries.path("points")) {
+                if (points.size() >= MAX_CHART_POINTS) break;
+                String label = point.path("label").asText("").trim();
+                BigDecimal value = decimal(point.path("value"));
+                if (!label.isEmpty() && value != null && labels.add(label)) {
+                    points.add(new AnswerPresentation.ChartPoint(label, value));
+                }
+            }
+            if (!points.isEmpty()) {
+                series.add(new AnswerPresentation.ChartSeries(
+                        clean(rawSeries.path("name").asText(null), "数值"), points));
+            }
+        }
+        return series.isEmpty() ? null : new AnswerPresentation.AnswerChart(
+                clean(chart.path("title").asText(null), "数据图表"), type, series);
     }
 
     private BigDecimal decimal(JsonNode value) {
@@ -139,8 +216,7 @@ public class AnswerPresentationParser {
 
     private ParsedPresentation fallback(String value) {
         String plainText = truncate(clean(value, "-"), 10_000);
-        AnswerPresentation presentation = new AnswerPresentation(
-                plainText, truncate(safeMarkdown(plainText), 10_000), List.of(), List.of());
+        AnswerPresentation presentation = AnswerPresentation.markdownOnly(truncate(safeMarkdown(plainText), 10_000));
         return new ParsedPresentation(presentation, toJson(presentation), true);
     }
 

@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.Map;
 import java.util.UUID;
+import java.time.Instant;
 
 @Service
 public class AgentTaskService {
@@ -38,15 +39,29 @@ public class AgentTaskService {
         return jdbcTemplate.queryForMap("select * from agent_task where request_id = ?", requestId);
     }
 
+    public Instant createdAt(String requestId) {
+        java.sql.Timestamp value = jdbcTemplate.queryForObject(
+                "select created_at from agent_task where request_id = ?", java.sql.Timestamp.class, requestId);
+        return value == null ? Instant.now() : value.toInstant();
+    }
+
     public void markRunning(String requestId) {
-        jdbcTemplate.update("update agent_task set status = ?, started_at = current_timestamp where request_id = ?", Status.RUNNING, requestId);
+        jdbcTemplate.update("update agent_task set status = ?, phase = ?, started_at = coalesce(started_at,current_timestamp), heartbeat_at=current_timestamp where request_id = ?",
+                Status.RUNNING, QueryPhase.PLANNING.name(), requestId);
     }
 
     public void markSucceeded(String requestId) {
-        jdbcTemplate.update("update agent_task set status = ?, finished_at = current_timestamp where request_id = ?", Status.SUCCEEDED, requestId);
+        jdbcTemplate.update("update agent_task set status = ?, phase = ?, finished_at = current_timestamp where request_id = ?",
+                Status.SUCCEEDED, QueryPhase.COMPLETED.name(), requestId);
     }
 
     public void markFailed(String requestId, String error) {
-        jdbcTemplate.update("update agent_task set status = ?, error_message = ?, finished_at = current_timestamp where request_id = ?", Status.FAILED, error, requestId);
+        jdbcTemplate.update("update agent_task set status = ?, phase = ?, error_message = ?, finished_at = current_timestamp where request_id = ?",
+                Status.FAILED, QueryPhase.FAILED.name(), error, requestId);
+    }
+
+    public void markPartial(String requestId, String reason) {
+        jdbcTemplate.update("update agent_task set status=?, phase=?, error_message=?, finished_at=current_timestamp where request_id=?",
+                Status.PARTIAL, QueryPhase.PARTIAL.name(), reason, requestId);
     }
 }

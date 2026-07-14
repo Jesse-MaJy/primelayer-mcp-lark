@@ -17,17 +17,22 @@ class FeishuAnswerCardRendererTest {
 
     @Test
     void rendersJsonTwoMarkdownTableAndLineChart() {
-        AnswerPresentation presentation = new AnswerPresentation("结论", "## 结论\n**6** 条缺陷", List.of(
-                new AnswerPresentation.AnswerTable("明细", List.of(
+        AnswerPresentation.AnswerTable tableData = new AnswerPresentation.AnswerTable("明细", List.of(
                         new AnswerPresentation.TableColumn("name", "名称"),
                         new AnswerPresentation.TableColumn("count", "数量")
-                ), List.of(Map.of("name", "C3", "count", "3")), 25)
-        ), List.of(new AnswerPresentation.AnswerChart("缺陷趋势", AnswerPresentation.ChartType.LINE, List.of(
+                ), List.of(Map.of("name", "C3", "count", "3")), 25);
+        AnswerPresentation.AnswerChart chartData = new AnswerPresentation.AnswerChart("缺陷趋势", AnswerPresentation.ChartType.LINE, List.of(
                 new AnswerPresentation.ChartSeries("缺陷", List.of(
                         new AnswerPresentation.ChartPoint("7月1日", new BigDecimal("2")),
                         new AnswerPresentation.ChartPoint("7月2日", new BigDecimal("6"))
                 ))
-        ))));
+        ));
+        AnswerPresentation presentation = new AnswerPresentation("结论", List.of(
+                AnswerPresentation.ContentBlock.markdown("## 结论\n**6** 条缺陷"),
+                AnswerPresentation.ContentBlock.chart(chartData),
+                AnswerPresentation.ContentBlock.markdown("趋势后的关键发现"),
+                AnswerPresentation.ContentBlock.table(tableData)
+        ));
 
         JsonNode card = objectMapper.valueToTree(renderer.answerCard(
                 "req-1", "质量日报", presentation, "项目数据分析", "blue",
@@ -40,6 +45,10 @@ class FeishuAnswerCardRendererTest {
         assertThat(card.toString()).contains("## 结论");
         assertThat(find(card, "tag", "markdown").path("content").asText()).isNotBlank();
         assertThat(card.toString()).doesNotContain("lark_md");
+        String body = card.at("/body/elements").toString();
+        assertThat(body.indexOf("## 结论")).isLessThan(body.indexOf("缺陷趋势"));
+        assertThat(body.indexOf("缺陷趋势")).isLessThan(body.indexOf("趋势后的关键发现"));
+        assertThat(body.indexOf("趋势后的关键发现")).isLessThan(body.indexOf("明细"));
         JsonNode table = find(card, "tag", "table");
         assertThat(table.path("columns").get(0).path("display_name").asText()).isEqualTo("名称");
         assertThat(table.path("rows").get(0).path("name").asText()).isEqualTo("C3");
@@ -57,13 +66,14 @@ class FeishuAnswerCardRendererTest {
 
     @Test
     void createsWhitelistedPieSpecWithoutExecutableContent() {
-        AnswerPresentation presentation = new AnswerPresentation("占比", "占比", List.of(), List.of(
-                new AnswerPresentation.AnswerChart("占比", AnswerPresentation.ChartType.PIE, List.of(
+        AnswerPresentation presentation = new AnswerPresentation("占比", List.of(
+                AnswerPresentation.ContentBlock.markdown("占比"),
+                AnswerPresentation.ContentBlock.chart(new AnswerPresentation.AnswerChart("占比", AnswerPresentation.ChartType.PIE, List.of(
                         new AnswerPresentation.ChartSeries("类型", List.of(
                                 new AnswerPresentation.ChartPoint("A", new BigDecimal("3")),
                                 new AnswerPresentation.ChartPoint("B", new BigDecimal("1"))
                         )))
-        )));
+                ))));
 
         JsonNode card = objectMapper.valueToTree(renderer.answerCard(
                 null, "问题", presentation, "回答", "blue", null));
@@ -77,12 +87,13 @@ class FeishuAnswerCardRendererTest {
 
     @Test
     void createsBarSpecFromNormalizedPoints() {
-        AnswerPresentation presentation = new AnswerPresentation("比较", "比较", List.of(), List.of(
-                new AnswerPresentation.AnswerChart("承包商比较", AnswerPresentation.ChartType.BAR, List.of(
+        AnswerPresentation presentation = new AnswerPresentation("比较", List.of(
+                AnswerPresentation.ContentBlock.markdown("比较"),
+                AnswerPresentation.ContentBlock.chart(new AnswerPresentation.AnswerChart("承包商比较", AnswerPresentation.ChartType.BAR, List.of(
                         new AnswerPresentation.ChartSeries("缺陷", List.of(
                                 new AnswerPresentation.ChartPoint("C3", new BigDecimal("3"))
                         )))
-        )));
+                ))));
 
         JsonNode spec = find(objectMapper.valueToTree(renderer.answerCard(
                 null, "问题", presentation, "回答", "blue", null)), "tag", "chart").path("chart_spec");

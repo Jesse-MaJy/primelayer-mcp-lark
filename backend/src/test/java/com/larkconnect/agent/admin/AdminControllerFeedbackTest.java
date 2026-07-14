@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 
 import java.sql.Timestamp;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.mock;
@@ -26,5 +27,19 @@ class AdminControllerFeedbackTest {
 
         assertEquals("张三", response.data().get(0).personName());
         assertEquals("其他", response.data().get(0).reasonLabel());
+    }
+
+    @Test
+    void returnsTraceEventDetailOnDedicatedEndpoint() {
+        ChainTraceService traces = mock(ChainTraceService.class);
+        when(traces.loadEvent("req-1", "event-1")).thenReturn(java.util.Optional.of(
+                Map.of("eventId", "event-1", "input", Map.of("question", "质量"))));
+        AdminController controller = new AdminController(
+                mock(AdminService.class), mock(AiRuntimeConfigService.class), traces,
+                mock(AnswerFeedbackRepository.class));
+
+        var response = controller.getChainTraceEvent("req-1", "event-1");
+
+        assertEquals("event-1", response.data().get("eventId"));
     }
 }

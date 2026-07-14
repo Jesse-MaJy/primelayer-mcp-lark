@@ -160,6 +160,7 @@ public class FeishuWsEchoBot {
             log.info("Feishu WS message ignored because text is empty. messageId={}", event.getEvent().getMessage().getMessageId());
             return;
         }
+        addGetReaction(event.getEvent().getMessage().getMessageId());
         if ("p2p".equals(event.getEvent().getMessage().getChatType()) && isStartupKeyword(text)) {
             feishuClient.replyWelcomeCard(event.getEvent().getMessage().getMessageId());
             log.info("Feishu WS welcome card sent. messageId={}", event.getEvent().getMessage().getMessageId());
@@ -175,6 +176,15 @@ public class FeishuWsEchoBot {
         taskService.createAndPublish(message);
         log.info("Feishu WS message accepted for Agent. messageId={}, chatType={}, chatId={}",
                 message.messageId(), message.chatType(), message.chatId());
+    }
+
+    private void addGetReaction(String messageId) {
+        try {
+            feishuClient.addReaction(messageId, "Get");
+        } catch (RuntimeException e) {
+            log.warn("Failed to add Get reaction to Feishu WS message. messageId={}, error={}",
+                    messageId, e.getMessage());
+        }
     }
 
     private boolean hasText(String value) {

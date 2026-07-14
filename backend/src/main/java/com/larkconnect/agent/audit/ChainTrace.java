@@ -47,6 +47,8 @@ public class ChainTrace {
         public int historyTurns;
         public int inputTokens;
         public int outputTokens;
+        public int cacheHits;
+        public int savedMcpCalls;
         public long totalLatencyMs;
         public String path;
         public String model;
@@ -65,6 +67,8 @@ public class ChainTrace {
             map.put("historyTurns", historyTurns);
             map.put("inputTokens", inputTokens);
             map.put("outputTokens", outputTokens);
+            map.put("cacheHits", cacheHits);
+            map.put("savedMcpCalls", savedMcpCalls);
             map.put("totalLatencyMs", totalLatencyMs);
             map.put("path", path);
             map.put("model", model);

@@ -10,6 +10,54 @@ export interface AiSettings {
   supportedModels: string[]
 }
 
+export type PromptStage = 'PLANNING' | 'FORM_ANALYSIS' | 'FINAL_SUMMARY' | 'PRESENTATION'
+export type PromptDomain = 'GLOBAL' | 'SAFETY' | 'QUALITY' | 'PROGRESS' | 'RISK'
+
+export interface PromptVersion {
+  id: number
+  stage: PromptStage
+  domain: PromptDomain
+  versionNo: number
+  content: string
+  status: 'DRAFT' | 'PUBLISHED' | 'ARCHIVED'
+  checksum: string
+  createdBy: string
+  createdAt: string
+  publishedAt?: string | null
+  active: boolean
+}
+
+export interface PromptReplaySnapshot {
+  id: number
+  requestId: string
+  stage: PromptStage
+  domain: PromptDomain
+  formId?: string | null
+  formName?: string | null
+  chunkIndex: number
+  chunkCount: number
+  recordCount: number
+  inputChars: number
+  createdAt: string
+}
+
+export interface PromptGovernanceData {
+  versions: PromptVersion[]
+  snapshots: PromptReplaySnapshot[]
+  allowedVariables: string[]
+  securityWarning: string
+}
+
+export interface PromptReplayResult {
+  snapshotId: number
+  candidateVersionId: number
+  domain: PromptDomain
+  currentOutput: string
+  candidateOutput: string
+  currentTokens: number
+  candidateTokens: number
+}
+
 export interface AnswerFeedbackDetail {
   feishuOpenId: string
   personName?: string | null
@@ -26,6 +74,50 @@ export interface FeishuCardPreset {
   description: string
   color: string
   card: Record<string, unknown>
+}
+
+export interface TraceNodeSummary {
+  id: string
+  eventId?: string
+  sequence?: number
+  type: 'model_call' | 'mcp_call' | string
+  purpose?: string | null
+  label: string
+  status: string
+  latencyMs?: number
+  inputTokens?: number
+  outputTokens?: number
+  totalTokens?: number
+  returnedCount?: number | null
+  reportedTotalCount?: number | null
+  cumulativeFetchedCount?: number | null
+  coveragePercent?: number | null
+  duplicatePage?: boolean
+  projectName?: string | null
+  toolName?: string | null
+  formId?: string | null
+  formName?: string | null
+  logicalCallId?: string | null
+  [key: string]: unknown
+}
+
+export interface ChainTraceResponse {
+  requestId: string
+  legacy: boolean
+  completeness: 'COMPLETE' | 'PARTIAL' | 'SUMMARY_ONLY' | string
+  traceCompleteness?: 'COMPLETE' | 'PARTIAL' | 'SUMMARY_ONLY' | string
+  executionStatus?: 'RUNNING' | 'COMPLETED' | 'PARTIAL' | 'FAILED' | string
+  summary: Record<string, any>
+  nodes: TraceNodeSummary[]
+  edges: Array<{ from: string; to: string }>
+}
+
+export interface TraceEventDetail extends TraceNodeSummary {
+  input?: unknown
+  output?: unknown
+  usage?: unknown
+  error?: unknown
+  metadata?: unknown
 }
 
 export const adminApi = {
@@ -46,6 +138,16 @@ export const adminApi = {
     http.get<unknown, AnswerFeedbackDetail[]>(`/api/admin/feishu-messages/${encodeURIComponent(requestId)}/feedback`),
   getAiSettings: () => http.get<unknown, AiSettings>('/api/admin/ai-settings'),
   saveAiSettings: (payload: Record<string, unknown>) => http.put<unknown, AiSettings>('/api/admin/ai-settings', payload),
+  getPromptTemplates: () => http.get<unknown, PromptGovernanceData>('/api/admin/prompt-templates'),
+  createPromptVersion: (stage: PromptStage, domain: PromptDomain, content: string) =>
+    http.post<unknown, PromptVersion>(`/api/admin/prompt-templates/${stage}/${domain}/versions`, { content }),
+  publishPromptVersion: (id: number, note?: string) =>
+    http.post<unknown, PromptVersion>(`/api/admin/prompt-templates/versions/${id}/publish`, { note }),
+  rollbackPromptVersion: (id: number, note?: string) =>
+    http.post<unknown, PromptVersion>(`/api/admin/prompt-templates/versions/${id}/rollback`, { note }),
+  replayPromptVersion: (id: number, snapshotId: number) =>
+    http.post<unknown, PromptReplayResult>(`/api/admin/prompt-templates/versions/${id}/replay`, { snapshotId }),
+  deletePromptReplaySnapshot: (id: number) => http.delete(`/api/admin/prompt-replay-snapshots/${id}`),
   debugHealth: () => http.get<unknown, Record<string, unknown>>('/api/admin/debug/health'),
   debugDeepSeekConnection: (payload: Record<string, unknown>) =>
     http.post<unknown, Record<string, unknown>>('/api/admin/debug/deepseek/connection', payload),
@@ -62,5 +164,9 @@ export const adminApi = {
     http.post<unknown, Record<string, unknown>>('/api/admin/debug/feishu/card-batch', payload),
   debugAgentQuery: (payload: Record<string, unknown>) => http.post('/api/admin/debug/agent/query', payload),
   getChainTrace: (requestId: string) =>
-    http.get<unknown, Record<string, unknown>>(`/api/admin/chain-trace/${requestId}`)
+    http.get<unknown, ChainTraceResponse>(`/api/admin/chain-trace/${encodeURIComponent(requestId)}`),
+  getChainTraceEvent: (requestId: string, eventId: string) =>
+    http.get<unknown, TraceEventDetail>(
+      `/api/admin/chain-trace/${encodeURIComponent(requestId)}/events/${encodeURIComponent(eventId)}`
+    )
 }

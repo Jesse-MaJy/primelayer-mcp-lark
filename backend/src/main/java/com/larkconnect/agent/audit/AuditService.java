@@ -48,6 +48,15 @@ public class AuditService {
                 """, requestId, model, purpose, inputSummary, outputText, status, latencyMs, error);
     }
 
+    public void writeTraceStatus(String requestId, String status, String error) {
+        jdbcTemplate.update("update agent_audit_log set trace_status = ?, trace_error_message = ? where request_id = ?",
+                status, error, requestId);
+    }
+
+    public void updateProcessingLatency(String requestId, long latencyMs) {
+        jdbcTemplate.update("update agent_audit_log set latency_ms = ? where request_id = ?", latencyMs, requestId);
+    }
+
     private String toJson(Object value) {
         try {
             return objectMapper.writeValueAsString(value);
