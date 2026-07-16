@@ -31,22 +31,25 @@ public class AdminController {
     private final AnswerFeedbackRepository answerFeedbackRepository;
     private final PromptTemplateService promptTemplateService;
     private final PromptReplayService promptReplayService;
+    private final TaskTerminationService taskTerminationService;
 
     @Autowired
     public AdminController(AdminService adminService, AiRuntimeConfigService aiRuntimeConfigService,
                            ChainTraceService chainTraceService, AnswerFeedbackRepository answerFeedbackRepository,
-                           PromptTemplateService promptTemplateService, PromptReplayService promptReplayService) {
+                           PromptTemplateService promptTemplateService, PromptReplayService promptReplayService,
+                           TaskTerminationService taskTerminationService) {
         this.adminService = adminService;
         this.aiRuntimeConfigService = aiRuntimeConfigService;
         this.chainTraceService = chainTraceService;
         this.answerFeedbackRepository = answerFeedbackRepository;
         this.promptTemplateService = promptTemplateService;
         this.promptReplayService = promptReplayService;
+        this.taskTerminationService = taskTerminationService;
     }
 
     public AdminController(AdminService adminService, AiRuntimeConfigService aiRuntimeConfigService,
                            ChainTraceService chainTraceService, AnswerFeedbackRepository answerFeedbackRepository) {
-        this(adminService, aiRuntimeConfigService, chainTraceService, answerFeedbackRepository, null, null);
+        this(adminService, aiRuntimeConfigService, chainTraceService, answerFeedbackRepository, null, null, null);
     }
 
     @PostMapping("/login")
@@ -81,17 +84,6 @@ public class AdminController {
         return ApiResponse.ok(null);
     }
 
-    @GetMapping("/chat-project-bindings")
-    public ApiResponse<List<Map<String, Object>>> listChatBindings() {
-        return ApiResponse.ok(adminService.listChatBindings());
-    }
-
-    @PostMapping("/chat-project-bindings")
-    public ApiResponse<Void> saveChatBinding(@Valid @RequestBody AdminDtos.ChatProjectBindingRequest request) {
-        adminService.saveChatBinding(request);
-        return ApiResponse.ok(null);
-    }
-
     @GetMapping("/audit-logs")
     public ApiResponse<List<Map<String, Object>>> listAuditLogs() {
         return ApiResponse.ok(adminService.listAuditLogs());
@@ -110,6 +102,11 @@ public class AdminController {
     @GetMapping("/feishu-messages/{requestId}/feedback")
     public ApiResponse<List<AnswerFeedbackRepository.FeedbackDetail>> listMessageFeedback(@PathVariable String requestId) {
         return ApiResponse.ok(answerFeedbackRepository.listDetails(requestId));
+    }
+
+    @PostMapping("/feishu-messages/{requestId}/terminate")
+    public ApiResponse<TaskTerminationService.TerminateTaskResponse> terminateTask(@PathVariable String requestId) {
+        return ApiResponse.ok(taskTerminationService.terminate(requestId));
     }
 
     @GetMapping("/ai-settings")

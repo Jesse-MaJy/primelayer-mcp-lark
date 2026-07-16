@@ -67,7 +67,7 @@ class AnswerFeedbackRepositoryTest {
 
         AnswerFeedbackRepository.AnswerContext context = repository.findAnswer("req-1").orElseThrow();
 
-        assertEquals("项目数据分析", context.title());
+        assertEquals("工程管理分析", context.title());
         assertTrue(context.presentationJson().contains("## 回答"));
         assertTrue(repository.findAnswer("missing").isEmpty());
     }

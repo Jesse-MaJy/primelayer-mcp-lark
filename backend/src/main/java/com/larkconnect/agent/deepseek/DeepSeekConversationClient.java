@@ -14,6 +14,10 @@ public interface DeepSeekConversationClient {
                                 List<Map<String, Object>> tools, boolean allowTools) {
         return complete(selectedModel, messages, tools, allowTools);
     }
+    default Completion completeStructured(TraceContext traceContext, String selectedModel,
+                                          List<Map<String, Object>> messages) {
+        return complete(traceContext, selectedModel, messages, List.of(), false);
+    }
     default Completion formatPresentation(String selectedModel, List<Map<String, Object>> messages) {
         return complete(selectedModel, messages, List.of(), false);
     }

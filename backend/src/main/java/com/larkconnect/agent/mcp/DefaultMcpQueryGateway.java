@@ -4,6 +4,8 @@ import com.larkconnect.agent.audit.AuditService;
 import com.larkconnect.agent.audit.TraceEventService;
 import com.larkconnect.agent.common.Status;
 import com.larkconnect.agent.config.AppProperties;
+import com.larkconnect.agent.agent.QueryCancelledException;
+import com.larkconnect.agent.agent.TaskCancellationGuard;
 import com.larkconnect.agent.token.TokenResolver;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
@@ -32,6 +34,7 @@ public class DefaultMcpQueryGateway implements McpQueryGateway {
     private final AppProperties properties;
     private final TraceEventService traceEvents;
     private final McpTraceSampler traceSampler;
+    private final TaskCancellationGuard cancellationGuard;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final Map<QueryContext, List<TokenResolver.TokenEntry>> authorizedTokens =
             Collections.synchronizedMap(new WeakHashMap<>());
@@ -41,20 +44,28 @@ public class DefaultMcpQueryGateway implements McpQueryGateway {
     @Autowired
     public DefaultMcpQueryGateway(TokenResolver tokenResolver, McpAdapter mcpAdapter,
                                   McpToolRegistry toolRegistry, AuditService auditService,
-                                  AppProperties properties, TraceEventService traceEvents) {
+                                  AppProperties properties, TraceEventService traceEvents,
+                                  TaskCancellationGuard cancellationGuard) {
         this.tokenResolver = tokenResolver;
         this.mcpAdapter = mcpAdapter;
         this.toolRegistry = toolRegistry;
         this.auditService = auditService;
         this.properties = properties;
         this.traceEvents = traceEvents;
+        this.cancellationGuard = cancellationGuard;
         this.traceSampler = new McpTraceSampler(new com.fasterxml.jackson.databind.ObjectMapper());
     }
 
     DefaultMcpQueryGateway(TokenResolver tokenResolver, McpAdapter mcpAdapter,
                            McpToolRegistry toolRegistry, AuditService auditService,
                            AppProperties properties) {
-        this(tokenResolver, mcpAdapter, toolRegistry, auditService, properties, null);
+        this(tokenResolver, mcpAdapter, toolRegistry, auditService, properties, null, null);
+    }
+
+    DefaultMcpQueryGateway(TokenResolver tokenResolver, McpAdapter mcpAdapter,
+                           McpToolRegistry toolRegistry, AuditService auditService,
+                           AppProperties properties, TraceEventService traceEvents) {
+        this(tokenResolver, mcpAdapter, toolRegistry, auditService, properties, traceEvents, null);
     }
 
     @Override
@@ -64,16 +75,30 @@ public class DefaultMcpQueryGateway implements McpQueryGateway {
 
     @Override
     public QueryContext loadContext(String requestId, String openId, String chatId, String chatType) {
-        TokenResolver.ResolvedContext resolved = tokenResolver.resolveCandidates(
-                openId, chatId, chatType, properties.agent().maxProjectsPerQuery());
+        return loadContext(requestId, openId, chatId, chatType, List.of());
+    }
+
+    @Override
+    public QueryContext loadContext(String requestId, String openId, String chatId, String chatType,
+                                    List<String> projectIds) {
+        TokenResolver.ResolvedContext resolved = projectIds == null || projectIds.isEmpty()
+                ? tokenResolver.resolveCandidates(openId, chatId, chatType, properties.agent().maxProjectsPerQuery())
+                : tokenResolver.resolveSelected(openId, projectIds);
         if (resolved.hasError()) return new QueryContext(null, List.of(), List.of(), resolved.errorMessage(), List.of());
-        List<Project> projects = resolved.tokens().stream()
-                .map(token -> new Project(token.projectId(), token.projectName()))
+        List<TokenResolver.TokenEntry> resolvedTokens = resolved.tokens().stream().map(token ->
+                token.mcpUserId() == null || token.mcpUserId().isBlank()
+                        ? new TokenResolver.TokenEntry(token.tokenId(), token.feishuOpenId(),
+                        resolved.primelayerUserId() == null ? "" : resolved.primelayerUserId(),
+                        token.projectId(), token.projectName(), token.projectRemark(), token.token())
+                        : token).toList();
+        List<Project> projects = resolvedTokens.stream()
+                .map(token -> new Project(token.projectId(), token.projectName(), token.projectRemark()))
                 .toList();
         Map<String, List<Map<String, Object>>> toolsByProject = new LinkedHashMap<>();
         List<String> discoveryFailures = new ArrayList<>();
         List<String> traceEventIds = new ArrayList<>();
-        for (TokenResolver.TokenEntry token : resolved.tokens()) {
+        for (TokenResolver.TokenEntry token : resolvedTokens) {
+            checkCancelled(requestId);
             TraceEventService.EventHandle trace = startMcpTrace(requestId, "tool_discovery", "MCP 工具发现",
                     token, "tools/list", null, ExecutionTrace.empty(), null, null);
             try {
@@ -86,6 +111,7 @@ public class DefaultMcpQueryGateway implements McpQueryGateway {
                     response = mcpAdapter.listTools(token.token());
                 }
                 toolsByProject.put(token.projectId(), toolRegistry.filterDiscoveredTools(extractTools(response)));
+                checkCancelled(requestId);
                 addTraceId(traceEventIds, trace);
             } catch (Exception e) {
                 failMcpTrace(trace, e);
@@ -98,9 +124,9 @@ public class DefaultMcpQueryGateway implements McpQueryGateway {
         String availabilityError = !discoveryFailures.isEmpty()
                 ? "部分项目 MCP 工具发现失败：" + String.join("；", discoveryFailures)
                 : tools.isEmpty() ? "MCP 没有暴露可用的只读工具" : null;
-        QueryContext context = new QueryContext(resolved.primelayerUserId(), projects, tools, availabilityError,
+        QueryContext context = new QueryContext(null, projects, tools, availabilityError,
                 List.copyOf(traceEventIds));
-        authorizedTokens.put(context, List.copyOf(resolved.tokens()));
+        authorizedTokens.put(context, List.copyOf(resolvedTokens));
         projectTools.put(context, immutableProjectTools(toolsByProject));
         return context;
     }
@@ -115,6 +141,7 @@ public class DefaultMcpQueryGateway implements McpQueryGateway {
     public List<ToolObservation> execute(String requestId, QueryContext context, String toolName,
                                          List<String> projectIds, Map<String, Object> arguments,
                                          ExecutionTrace traceContext) {
+        checkCancelled(requestId);
         List<TokenResolver.TokenEntry> tokens = authorizedTokens.getOrDefault(context, List.of());
         if (tokens.isEmpty()) throw new IllegalArgumentException("MCP 项目上下文已失效，请重试");
         List<TokenResolver.TokenEntry> targets = targetTokens(tokens, projectIds);
@@ -152,73 +179,74 @@ public class DefaultMcpQueryGateway implements McpQueryGateway {
         List<Map<String, Object>> targetTools = toolsByProject.getOrDefault(token.projectId(), List.of());
         TraceEventService.EventHandle validationTrace = null;
         try {
+            checkCancelled(requestId);
             Object savedState = paginationStates.get(token.projectId());
             ToolObservation completed = completedObservation(savedState, token, toolName);
             if (completed != null) return completed;
             Map<String, Object> effectiveArguments = effectiveArguments(
-                    publicArguments, token.projectId(), context.primelayerUserId());
+                    publicArguments, token.projectId(), token.mcpUserId(), toolName, targetTools);
             validationTrace = startMcpTrace(requestId, "tool_validation", toolName + " · 参数校验",
                     token, toolName, effectiveArguments, traceContext, null, null);
-            toolRegistry.validate(toolName, validationArguments(
-                    publicArguments, effectiveArguments, toolName, targetTools), targetTools);
+            toolRegistry.validate(toolName, effectiveArguments, targetTools);
             completeMcpTrace(validationTrace,
                     new McpAdapter.ObservedCall(effectiveArguments, Map.of("valid", true), 0, null, null),
                     Status.SUCCEEDED, null, traceMetadata(traceContext));
             McpAdapter.PaginationStyle paginationStyle = paginationStyle(toolName, publicArguments, targetTools);
-            return executeForProject(requestId, context.primelayerUserId(), token,
-                    toolName, publicArguments, paginationStyle, traceContext, savedState);
+            return executeForProject(requestId, token.mcpUserId(), token,
+                    toolName, effectiveArguments, paginationStyle, traceContext, savedState);
         } catch (Exception e) {
+            if (e instanceof QueryCancelledException cancelled) throw cancelled;
             failMcpTrace(validationTrace, e);
             String error = "项目 " + token.projectName() + " / " + toolName + " 校验失败：" + readable(e);
-            auditService.writeTool(requestId, token.projectId(), context.primelayerUserId(), toolName,
+            auditService.writeTool(requestId, token.projectId(), token.mcpUserId(), toolName,
                     publicArguments, Status.FAILED, 0, error);
             return new ToolObservation(token.projectId(), token.projectName(), toolName,
                     Status.FAILED, Map.of(), error, 0, 0, false, null, null, List.of());
         }
     }
 
+    @SuppressWarnings("unchecked")
     private Map<String, Object> effectiveArguments(Map<String, Object> requestedArguments,
-                                                   String projectId, String primelayerUserId) {
+                                                   String projectId, String primelayerUserId,
+                                                   String toolName, List<Map<String, Object>> tools) {
         Map<String, Object> effective = new LinkedHashMap<>(
                 requestedArguments == null ? Map.of() : requestedArguments);
-        effective.put("project_id", projectId);
-        effective.put("primelayer_user_id", primelayerUserId);
-        return effective;
-    }
-
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> validationArguments(Map<String, Object> requestedArguments,
-                                                    Map<String, Object> effectiveArguments,
-                                                    String toolName, List<Map<String, Object>> tools) {
-        Map<String, Object> validation = new LinkedHashMap<>(
-                requestedArguments == null ? Map.of() : requestedArguments);
+        List<String> managedArguments = List.of(
+                "project_id", "projectId", "primelayer_user_id", "primelayerUserId");
+        managedArguments.forEach(effective::remove);
+        Set<String> declared = Set.of();
         for (Map<String, Object> tool : tools) {
             if (!toolName.equals(String.valueOf(tool.get("name")))) continue;
             if (!(tool.get("inputSchema") instanceof Map<?, ?> rawSchema)) break;
             Map<String, Object> schema = (Map<String, Object>) rawSchema;
-            Set<String> declared = schema.get("properties") instanceof Map<?, ?> properties
-                    ? properties.keySet().stream().map(String::valueOf).collect(Collectors.toSet()) : Set.of();
+            Set<String> properties = schema.get("properties") instanceof Map<?, ?> rawProperties
+                    ? rawProperties.keySet().stream().map(String::valueOf).collect(Collectors.toSet()) : Set.of();
             Set<String> required = schema.get("required") instanceof List<?> list
                     ? list.stream().map(String::valueOf).collect(Collectors.toSet()) : Set.of();
-            for (String managed : List.of("project_id", "projectId", "primelayer_user_id", "primelayerUserId")) {
-                if (declared.contains(managed) || required.contains(managed)) {
-                    Object value = effectiveArguments.get(managed);
-                    if (value == null && "projectId".equals(managed)) value = effectiveArguments.get("project_id");
-                    if (value == null && "primelayerUserId".equals(managed)) value = effectiveArguments.get("primelayer_user_id");
-                    validation.put(managed, value);
-                }
-            }
+            declared = new java.util.HashSet<>(properties);
+            declared.addAll(required);
             break;
         }
-        return validation;
+        if (hasText(projectId)) {
+            if (declared.contains("project_id")) effective.put("project_id", projectId);
+            if (declared.contains("projectId")) effective.put("projectId", projectId);
+        }
+        if (hasText(primelayerUserId)) {
+            if (declared.contains("primelayer_user_id")) effective.put("primelayer_user_id", primelayerUserId);
+            if (declared.contains("primelayerUserId")) effective.put("primelayerUserId", primelayerUserId);
+        }
+        return effective;
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private ToolObservation executeForProject(String requestId, String primelayerUserId,
                                               TokenResolver.TokenEntry token, String toolName,
-                                              Map<String, Object> requestedArguments,
+                                              Map<String, Object> arguments,
                                               McpAdapter.PaginationStyle paginationStyle,
                                               ExecutionTrace traceContext, Object savedState) {
-        Map<String, Object> arguments = effectiveArguments(requestedArguments, token.projectId(), primelayerUserId);
         long started = System.currentTimeMillis();
         try {
             if (paginationStyle == null) {
@@ -227,6 +255,7 @@ public class DefaultMcpQueryGateway implements McpQueryGateway {
                 McpAdapter.ObservedCall observed;
                 try {
                     observed = mcpAdapter.callToolObserved(token.token(), toolName, arguments);
+                    checkCancelled(requestId);
                     McpAdapter.ObservedCall traceObserved = new McpAdapter.ObservedCall(observed.rawRequest(),
                             traceSampler.sample(observed.rawResponse()), observed.latencyMs(),
                             observed.returnedCount(), observed.reportedTotalCount());
@@ -260,6 +289,7 @@ public class DefaultMcpQueryGateway implements McpQueryGateway {
                     token.token(), toolName, arguments, 100, paginationStyle, new McpAdapter.PaginationObserver() {
                         @Override
                         public Object onStart(int pageIndex, int pageSize, Map<String, Object> rawRequest) {
+                            checkCancelled(requestId);
                             TraceEventService.EventHandle handle = startMcpTrace(requestId, "tool_call",
                                     toolName + " · 第 " + (pageIndex + 1) + " 页", token, toolName,
                                     rawRequest, traceContext, pageIndex + 1, pageSize);
@@ -324,6 +354,7 @@ public class DefaultMcpQueryGateway implements McpQueryGateway {
                     result.pages().size(), result.pages().size(), truncated,
                     result.fetchedCount(), result.reportedTotalCount(), List.copyOf(pageTraceIds));
         } catch (Exception e) {
+            if (e instanceof QueryCancelledException cancelled) throw cancelled;
             if (retryable(e)) {
                 long retryAfterSeconds = retryAfterSeconds(e);
                 Map<String, Object> payload = new LinkedHashMap<>();
@@ -354,6 +385,10 @@ public class DefaultMcpQueryGateway implements McpQueryGateway {
             current = current.getCause();
         }
         return false;
+    }
+
+    private void checkCancelled(String requestId) {
+        if (cancellationGuard != null) cancellationGuard.check(requestId);
     }
 
     private long retryAfterSeconds(Throwable error) {

@@ -92,12 +92,14 @@ public class AgentOrchestrator {
             UnifiedQueryService.QueryResult result = unifiedQueryService.query(
                     new UnifiedQueryService.QueryRequest(requestId, question, chatType, openId, chatId,
                             instant(task.get("created_at"))));
-            boolean partial = "hard_timeout".equals(result.stopReason())
-                    || "partial_coverage".equals(result.stopReason())
-                    || "deepseek_response_error".equals(result.stopReason())
-                    || !result.failures().isEmpty();
-            String title = partial ? "项目数据分析（部分结果）"
-                    : "mcp_deepseek".equals(result.path()) ? "项目数据分析" : "DeepSeek 回答";
+            if (taskService.isCancelled(requestId)) throw new QueryCancelledException(requestId);
+            boolean partial = result.managementConclusionLimited();
+            boolean clarification = "mcp_clarification".equals(result.path())
+                    || "project_scope_clarification".equals(result.path());
+            String title = partial ? "工程管理分析（受限）"
+                    : clarification ? "需要补充查询范围"
+                    : "mcp_config_missing".equals(result.path()) ? "MCP Token 未配置"
+                    : "mcp_deepseek".equals(result.path()) ? "工程管理分析" : "DeepSeek 回答";
             auditService.writeModel(requestId, result.model(), result.path(),
                     auditSummary(result),
                     result.presentationJson() == null ? result.answer() : result.presentationJson(),
@@ -117,13 +119,15 @@ public class AgentOrchestrator {
                     payload.put("answer", result.answer());
                     payload.put("presentationJson", result.presentationJson());
                     payload.put("title", title);
-                    payload.put("template", partial ? "orange" : "blue");
-                    deliveryOutbox.enqueueOnce(requestId, DeliveryType.FINAL_RESULT,
+                    payload.put("template", partial || clarification ? "orange" : "blue");
+                    deliveryOutbox.enqueueFinalOnceIfActive(requestId,
                             objectMapper.writeValueAsString(payload), clock.instant());
+                    if (taskService.isCancelled(requestId)) throw new QueryCancelledException(requestId);
                     delivery = null;
                 } else {
                     delivery = feishuClient.replyAnswerFeedbackCard(
-                            messageId, requestId, question, result.presentation(), title, partial ? "orange" : "blue");
+                            messageId, requestId, question, result.presentation(), title,
+                            partial || clarification ? "orange" : "blue");
                 }
                 if (delivery != null && delivery.warning() != null) {
                     auditService.writeMain(requestId, openId, chatId, null, result.projectsQueried(), question,
@@ -147,6 +151,8 @@ public class AgentOrchestrator {
             }
             auditService.updateProcessingLatency(requestId, System.currentTimeMillis() - started);
             return partial ? ProcessResult.partial(result.stopReason()) : ProcessResult.success();
+        } catch (QueryCancelledException cancelled) {
+            return ProcessResult.cancelledResult();
         } catch (UnifiedQueryService.QueryPendingException pending) {
             return ProcessResult.pending(pending.resumeAfter());
         } catch (Exception e) {
@@ -169,17 +175,18 @@ public class AgentOrchestrator {
     }
 
     public record ProcessResult(boolean succeeded, String error, boolean partial,
-                                boolean pending, Duration resumeAfter) {
-        public static ProcessResult success() { return new ProcessResult(true, null, false, false, null); }
+                                boolean pending, boolean cancelled, Duration resumeAfter) {
+        public static ProcessResult success() { return new ProcessResult(true, null, false, false, false, null); }
         public static ProcessResult partial(String reason) {
-            return new ProcessResult(true, reason, true, false, null);
+            return new ProcessResult(true, reason, true, false, false, null);
         }
         public static ProcessResult pending(Duration resumeAfter) {
-            return new ProcessResult(false, null, false, true, resumeAfter);
+            return new ProcessResult(false, null, false, true, false, resumeAfter);
         }
         public static ProcessResult failed(String error) {
-            return new ProcessResult(false, error, false, false, null);
+            return new ProcessResult(false, error, false, false, false, null);
         }
+        public static ProcessResult cancelledResult() { return new ProcessResult(false, null, false, false, true, null); }
     }
 
     private void writeTraceStatus(String requestId) {
@@ -198,6 +205,9 @@ public class AgentOrchestrator {
                 + ", cacheHits=" + result.cacheHits()
                 + ", savedMcpCalls=" + result.cacheHits()
                 + ", projects=" + result.projectsQueried()
+                + ", discoveredForms=" + result.discoveredFormCount()
+                + ", acceptedForms=" + result.acceptedFormCount()
+                + ", rejectedForms=" + result.rejectedFormCount()
                 + ", partialFailure=" + !result.failures().isEmpty()
                 + ", inputTokens=" + result.inputTokens()
                 + ", outputTokens=" + result.outputTokens()

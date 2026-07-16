@@ -8,6 +8,10 @@ public interface McpQueryGateway {
     default QueryContext loadContext(String requestId, String openId, String chatId, String chatType) {
         return loadContext(openId, chatId, chatType);
     }
+    default QueryContext loadContext(String requestId, String openId, String chatId, String chatType,
+                                     List<String> projectIds) {
+        return loadContext(requestId, openId, chatId, chatType);
+    }
     List<ToolObservation> execute(String requestId, QueryContext context, String toolName,
                                   List<String> projectIds, Map<String, Object> arguments);
     default List<ToolObservation> execute(String requestId, QueryContext context, String toolName,
@@ -16,7 +20,9 @@ public interface McpQueryGateway {
         return execute(requestId, context, toolName, projectIds, arguments);
     }
 
-    record Project(String projectId, String projectName) {}
+    record Project(String projectId, String projectName, String projectRemark) {
+        public Project(String projectId, String projectName) { this(projectId, projectName, ""); }
+    }
     record QueryContext(String primelayerUserId, List<Project> projects,
                         List<Map<String, Object>> availableTools, String availabilityError,
                         List<String> traceEventIds) {

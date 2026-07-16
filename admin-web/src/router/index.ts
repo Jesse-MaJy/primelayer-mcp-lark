@@ -2,7 +2,6 @@ import { createRouter, createWebHistory } from 'vue-router'
 import LoginView from '../views/LoginView.vue'
 import AdminLayout from '../views/AdminLayout.vue'
 import PeopleConfigView from '../views/PeopleConfigView.vue'
-import ChatBindingsView from '../views/ChatBindingsView.vue'
 import AuditLogsView from '../views/AuditLogsView.vue'
 import AgentTasksView from '../views/AgentTasksView.vue'
 import ChainTraceView from '../views/ChainTraceView.vue'
@@ -23,7 +22,6 @@ const router = createRouter({
         { path: 'people-configs', component: PeopleConfigView },
         { path: 'user-bindings', redirect: '/people-configs' },
         { path: 'project-tokens', redirect: '/people-configs' },
-        { path: 'chat-bindings', component: ChatBindingsView },
         { path: 'system-settings', component: SystemSettingsView },
         { path: 'prompt-templates', component: PromptTemplatesView },
         { path: 'audit-logs', component: AuditLogsView },

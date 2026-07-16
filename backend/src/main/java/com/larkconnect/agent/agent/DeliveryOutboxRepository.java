@@ -25,10 +25,42 @@ public class DeliveryOutboxRepository {
         }
     }
 
+    public boolean enqueueFinalOnceIfActive(String requestId, String payloadJson, Instant now) {
+        try {
+            return jdbc.update("""
+                    insert into agent_delivery_outbox(request_id, delivery_type, payload_json, status, attempts, next_attempt_at)
+                    select request_id, 'FINAL_RESULT', ?, 'PENDING', 0, ? from agent_task
+                    where request_id=? and status in ('PENDING','RUNNING')
+                    """, payloadJson, ts(now), requestId) == 1;
+        } catch (DuplicateKeyException duplicate) {
+            return false;
+        }
+    }
+
+    public boolean finalResultSendingOrSent(String requestId) {
+        Integer count = jdbc.queryForObject("""
+                select count(*) from agent_delivery_outbox
+                where request_id=? and delivery_type='FINAL_RESULT' and status in ('SENDING','SENT')
+                """, Integer.class, requestId);
+        return count != null && count > 0;
+    }
+
+    public void cancelUnsentOutputs(String requestId) {
+        jdbc.update("""
+                update agent_delivery_outbox set status='CANCELLED', lease_until=null
+                where request_id=? and delivery_type in ('FINAL_RESULT','LONG_RUNNING_NOTICE')
+                  and status in ('PENDING','RETRY')
+                """, requestId);
+    }
+
     public Optional<DeliveryOutboxEntry> claimDue(Instant now, Instant leaseUntil) {
         List<Long> ids = jdbc.query("""
-                select id from agent_delivery_outbox where status in ('PENDING','RETRY','SENDING')
-                  and next_attempt_at <= ? and (lease_until is null or lease_until < ?) order by id limit 1
+                select o.id from agent_delivery_outbox o
+                left join agent_task t on t.request_id=o.request_id
+                where o.status in ('PENDING','RETRY','SENDING')
+                  and o.next_attempt_at <= ? and (o.lease_until is null or o.lease_until < ?)
+                  and (o.delivery_type='TASK_CANCELLED' or coalesce(t.status, '') <> 'CANCELLED')
+                order by o.id limit 1
                 """, (rs, row) -> rs.getLong(1), ts(now), ts(now));
         if (ids.isEmpty()) return Optional.empty();
         long id = ids.get(0);

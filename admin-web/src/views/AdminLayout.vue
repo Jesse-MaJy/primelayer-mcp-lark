@@ -4,7 +4,6 @@
       <div class="brand">Lark Connect</div>
       <a-menu mode="inline" :selected-keys="[route.path]">
         <a-menu-item key="/people-configs" @click="go('/people-configs')">人员配置</a-menu-item>
-        <a-menu-item key="/chat-bindings" @click="go('/chat-bindings')">群项目绑定</a-menu-item>
         <a-menu-item key="/system-settings" @click="go('/system-settings')">系统配置</a-menu-item>
         <a-menu-item key="/prompt-templates" @click="go('/prompt-templates')">提示词治理</a-menu-item>
         <a-menu-item key="/test-center" @click="go('/test-center')">测试中心</a-menu-item>

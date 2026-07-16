@@ -48,8 +48,7 @@ class DefaultMcpQueryGatewayTest {
         Map<String, Object> tools = toolList("string");
         when(adapter.listToolsObserved("token-1")).thenReturn(new McpAdapter.ObservedCall(
                 Map.of("method", "tools/list"), tools, 12, 1, null));
-        when(adapter.callToolObserved("token-1", "query_tasks", Map.of(
-                "status", "open", "project_id", "P1", "primelayer_user_id", "pl")))
+        when(adapter.callToolObserved("token-1", "query_tasks", Map.of("status", "open")))
                 .thenReturn(new McpAdapter.ObservedCall(
                         Map.of("method", "tools/call"), Map.of("result", Map.of("items", List.of(1, 2, 3))),
                         20, 3, null));
@@ -98,6 +97,26 @@ class DefaultMcpQueryGatewayTest {
         assertThat(observation.status()).isEqualTo("SUCCEEDED");
         verify(adapter).callToolObserved("token-1", "query_tasks", Map.of(
                 "status", "open", "project_id", "P1", "primelayer_user_id", "pl"));
+    }
+
+    @Test
+    void omitsManagedArgumentsWhenToolSchemaDoesNotDeclareThem() {
+        TokenResolver resolver = mock(TokenResolver.class);
+        McpAdapter adapter = mock(McpAdapter.class);
+        when(resolver.resolveCandidates("u1", "c1", "p2p", 20)).thenReturn(TokenResolver.ResolvedContext.ok(null, List.of(
+                new TokenResolver.TokenEntry(1L, "u1", "", "P1", "项目一", null, "token-1"))));
+        when(adapter.listTools("token-1")).thenReturn(toolList("string"));
+        when(adapter.callToolObserved("token-1", "query_tasks", Map.of("status", "open")))
+                .thenReturn(new McpAdapter.ObservedCall(Map.of(), Map.of("result", Map.of()), 5, 0, 0));
+        DefaultMcpQueryGateway gateway = gateway(resolver, adapter);
+
+        McpQueryGateway.QueryContext context = gateway.loadContext("u1", "c1", "p2p");
+        McpQueryGateway.ToolObservation observation = gateway.execute(
+                "r-token-context", context, "query_tasks", List.of("P1"), Map.of(
+                        "status", "open", "project_id", "spoofed", "primelayer_user_id", "spoofed")).get(0);
+
+        assertThat(observation.status()).isEqualTo("SUCCEEDED");
+        verify(adapter).callToolObserved("token-1", "query_tasks", Map.of("status", "open"));
     }
 
     @Test

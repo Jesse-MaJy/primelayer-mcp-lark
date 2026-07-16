@@ -15,7 +15,9 @@ public enum QueryPhase {
     POLLING_ASYNC,
     ANALYZING_FORMS,
     FINALIZING,
+    ROUTING,
     COMPLETED,
     PARTIAL,
-    FAILED
+    FAILED,
+    CANCELLED
 }

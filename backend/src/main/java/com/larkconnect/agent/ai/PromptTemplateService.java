@@ -152,8 +152,8 @@ public class PromptTemplateService {
     private String defaultTemplate(PromptStage stage) {
         return switch (stage) {
             case PLANNING -> "围绕用户问题选择必要的工程项目数据，严格使用给定时间和项目范围。问题：{{question}}\n时间：{{temporalContext}}\n项目：{{projectContext}}";
-            case FORM_ANALYSIS -> "分析给定工程业务数据分块，不编造事实。表单：{{formName}}，分块 {{chunkIndex}}/{{chunkCount}}。输出 JSON：statistics、evidence、risks、dataGaps。数据：{{chunkData}}";
-            case FINAL_SUMMARY -> "基于全部分块分析形成管理结论，不得要求重新查询。原问题：{{question}}\n时间：{{temporalContext}}\n分块分析：{{chunkAnalyses}}\n失败：{{failures}}";
+            case FORM_ANALYSIS -> "分析给定工程业务数据分块，不编造事实。优先提取管理指标、异常、风险、责任和行动线索。表单：{{formName}}，分块 {{chunkIndex}}/{{chunkCount}}。输出 JSON：statistics、evidence、risks、actions、dataGaps。数据：{{chunkData}}";
+            case FINAL_SUMMARY -> "你是工程管理软件中的回答助手。基于真实业务数据形成面向项目负责人的管理回答，依次给出总体判断、关键指标、主要问题与风险、建议动作和时间口径；不要把工具过程或数据完整性作为回答主体，不得要求重新查询。原问题：{{question}}\n时间：{{temporalContext}}\n业务分析：{{chunkAnalyses}}\n结论限制：{{failures}}";
             case PRESENTATION -> "将回答转换为清晰的工程管理展示结构，不增删事实。原始内容：{{chunkAnalyses}}";
         };
     }

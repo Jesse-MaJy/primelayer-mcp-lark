@@ -11,11 +11,24 @@ import static org.mockito.Mockito.when;
 
 class AgentWorkerTest {
     @Test
+    void ignoresRabbitDeliveryForCancelledTask() {
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        when(tasks.isCancelled("r-cancelled")).thenReturn(true);
+
+        new AgentWorker(tasks, orchestrator).handle(new AgentTaskMessage("r-cancelled"));
+
+        verify(orchestrator, never()).process("r-cancelled");
+        verify(tasks, never()).markRunning("r-cancelled");
+    }
+
+    @Test
     void schedulesPendingQueryWithoutMarkingTaskTerminal() {
         AgentTaskService tasks = mock(AgentTaskService.class);
         AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
         QueryCheckpointRepository checkpoints = mock(QueryCheckpointRepository.class);
         QueryResumePublisher publisher = mock(QueryResumePublisher.class);
+        when(tasks.markRunning("r-pending")).thenReturn(true);
         when(checkpoints.claim(org.mockito.ArgumentMatchers.eq("r-pending"),
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any())).thenReturn(true);
         when(orchestrator.process("r-pending")).thenReturn(
@@ -52,6 +65,7 @@ class AgentWorkerTest {
     void marksHandledAiOutageAsFailedWithoutThrowingForRetry() {
         AgentTaskService tasks = mock(AgentTaskService.class);
         AgentOrchestrator orchestrator = mock(AgentOrchestrator.class);
+        when(tasks.markRunning("r1")).thenReturn(true);
         when(orchestrator.process("r1")).thenReturn(AgentOrchestrator.ProcessResult.failed(
                 "飞书消息发送失败：卡片表格数量超过飞书上限（最多 5 个）"));
 

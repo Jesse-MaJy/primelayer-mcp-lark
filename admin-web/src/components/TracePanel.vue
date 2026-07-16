@@ -459,11 +459,12 @@ function formatJson(value: unknown) {
 }
 function typeLabel(type: string) { return type === 'model_call' ? '模型' : type === 'mcp_call' ? 'MCP' : type }
 function purposeLabel(purpose: string) {
-  return ({ planning: '初始规划', replanning: '重规划', decision: '决策', form_analysis: '单表分析',
+  return ({ planning: '初始规划', replanning: '重规划', decision: '决策', tool_routing: '工具置信度路由',
+    form_ranking: '表单置信度评分', form_analysis: '单表分析',
     chunk_analysis: '分块分析', final_answer: '最终回答', presentation: '展示格式化' } as Record<string, string>)[purpose] || purpose
 }
-function statusLabel(status: string) { return ({ SUCCEEDED: '成功', PARTIAL: '部分成功', FAILED: '失败', RUNNING: '执行中', PENDING: '待续查', RETRYING: '重试中' } as Record<string, string>)[status] || status }
-function statusColor(status: string) { return status === 'SUCCEEDED' ? 'green' : status === 'PARTIAL' ? 'orange' : ['RUNNING', 'PENDING', 'RETRYING'].includes(status) ? 'blue' : 'red' }
+function statusLabel(status: string) { return ({ SUCCEEDED: '成功', PARTIAL: '部分成功', FAILED: '失败', CANCELLED: '已终止', RUNNING: '执行中', PENDING: '待续查', RETRYING: '重试中' } as Record<string, string>)[status] || status }
+function statusColor(status: string) { return status === 'SUCCEEDED' ? 'green' : status === 'PARTIAL' ? 'orange' : status === 'CANCELLED' ? 'default' : ['RUNNING', 'PENDING', 'RETRYING'].includes(status) ? 'blue' : 'red' }
 function escapeHtml(value: string) { return value.replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char] || char)) }
 </script>
 

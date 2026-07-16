@@ -1,5 +1,6 @@
 package com.larkconnect.agent.admin;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.larkconnect.agent.common.Status;
 import com.larkconnect.agent.config.AppProperties;
 import com.larkconnect.agent.crypto.TokenCryptoService;
@@ -26,6 +27,7 @@ public class AdminService {
     private final TokenCryptoService cryptoService;
     private final AppProperties properties;
     private final McpAdapter mcpAdapter;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public AdminService(
             AdminRepository repository,
@@ -65,12 +67,9 @@ public class AdminService {
 
     public void saveUserBinding(AdminDtos.UserBindingRequest request) {
         String openId = requireText(request.feishuOpenId(), "请先填写飞书 open_id");
-        String compatibleUserId = hasText(request.primelayerUserId()) ? clean(request.primelayerUserId()) : openId;
         repository.upsertUserBinding(new AdminDtos.UserBindingRequest(
                 request.personName(),
                 openId,
-                compatibleUserId,
-                request.primelayerUserName(),
                 defaultStatus(request.status())
         ));
     }
@@ -80,15 +79,13 @@ public class AdminService {
     }
 
     public Map<String, Object> verifyProjectToken(AdminDtos.ProjectTokenVerifyRequest request) {
-        String ownerType = defaultOwnerType(request.ownerType());
-        String ownerId = requireText(firstNonBlank(request.ownerId(), request.primelayerUserId()), "请先选择绑定对象");
+        String openId = requireText(request.feishuOpenId(), "请先选择飞书用户");
         String token = requireText(request.mcpToken(), "请先输入 MCP Token");
-        return verifyToken(ownerType, ownerId, token);
+        return verifyToken(openId, token);
     }
 
     public void saveProjectToken(AdminDtos.ProjectTokenRequest request) {
-        String ownerType = defaultOwnerType(request.ownerType());
-        String ownerId = requireText(firstNonBlank(request.ownerId(), request.primelayerUserId()), "请先选择绑定对象");
+        String openId = requireText(request.feishuOpenId(), "请先选择飞书用户");
         String projectId = clean(request.projectId());
         String projectName = clean(request.projectName());
         String projectRemark = clean(request.projectRemark());
@@ -109,8 +106,7 @@ public class AdminService {
             }
             repository.updateProjectTokenMetadata(normalizedProjectTokenRequest(
                     request.id(),
-                    ownerType,
-                    ownerId,
+                    openId,
                     projectId,
                     projectName,
                     projectRemark,
@@ -123,7 +119,7 @@ public class AdminService {
         }
 
         String token = requireText(request.mcpToken(), "请先输入 MCP Token");
-        Map<String, Object> verification = verifyToken(ownerType, ownerId, token);
+        Map<String, Object> verification = verifyToken(openId, token);
         if (!hasText(projectId) || !hasText(projectName)) {
             @SuppressWarnings("unchecked")
             Map<String, Object> selectedProject = (Map<String, Object>) verification.get("selectedProject");
@@ -144,8 +140,7 @@ public class AdminService {
         String importedBy = AdminContext.current() == null ? "system" : AdminContext.current().username();
         repository.upsertProjectToken(normalizedProjectTokenRequest(
                 request.id(),
-                ownerType,
-                ownerId,
+                openId,
                 projectId,
                 projectName,
                 projectRemark,
@@ -153,13 +148,13 @@ public class AdminService {
                 defaultStatus(request.tokenStatus()),
                 true,
                 manualConfirmed
-        ), ciphertext, suffix, importedBy, manualConfirmed ? "MANUAL" : "VERIFIED", null);
+        ), optionalText(verification.get("mcpUserId")), ciphertext, suffix, importedBy,
+                manualConfirmed ? "MANUAL" : "VERIFIED", null);
     }
 
     private AdminDtos.ProjectTokenRequest normalizedProjectTokenRequest(
             Long id,
-            String ownerType,
-            String ownerId,
+            String feishuOpenId,
             String projectId,
             String projectName,
             String projectRemark,
@@ -170,9 +165,7 @@ public class AdminService {
     ) {
         return new AdminDtos.ProjectTokenRequest(
                 id,
-                ownerType,
-                ownerId,
-                ownerId,
+                feishuOpenId,
                 clean(projectId),
                 clean(projectName),
                 hasText(projectRemark) ? clean(projectRemark) : clean(projectName),
@@ -181,20 +174,6 @@ public class AdminService {
                 replaceToken,
                 manualProjectConfirmed
         );
-    }
-
-    public List<Map<String, Object>> listChatBindings() {
-        return repository.listChatBindings();
-    }
-
-    public void saveChatBinding(AdminDtos.ChatProjectBindingRequest request) {
-        String createdBy = AdminContext.current() == null ? "system" : AdminContext.current().username();
-        repository.upsertChatBinding(new AdminDtos.ChatProjectBindingRequest(
-                request.feishuChatId(),
-                request.projectId(),
-                request.projectName(),
-                defaultStatus(request.status())
-        ), createdBy);
     }
 
     public List<Map<String, Object>> listAuditLogs() {
@@ -213,17 +192,20 @@ public class AdminService {
         return status == null || status.isBlank() ? Status.ACTIVE : status;
     }
 
-    private String defaultOwnerType(String ownerType) {
-        return hasText(ownerType) ? clean(ownerType).toUpperCase() : "OPEN_ID";
-    }
-
-    private Map<String, Object> verifyToken(String ownerType, String ownerId, String token) {
+    private Map<String, Object> verifyToken(String feishuOpenId, String token) {
         try {
             Map<String, Object> response = mcpAdapter.listTools(token);
             List<Map<String, Object>> tools = extractTools(response);
             List<Map<String, Object>> candidates = new ArrayList<>();
             collectProjectCandidates(response, candidates);
-            collectCandidatesFromReadOnlyTools(token, tools, candidates);
+            List<Map<String, Object>> metadataResponses = collectCandidatesFromReadOnlyTools(token, tools, candidates);
+            String mcpUserId = findMcpUserId(response);
+            if (!hasText(mcpUserId)) {
+                for (Map<String, Object> metadata : metadataResponses) {
+                    mcpUserId = findMcpUserId(metadata);
+                    if (hasText(mcpUserId)) break;
+                }
+            }
             List<Map<String, Object>> normalizedCandidates = normalizeCandidates(candidates);
             List<String> warnings = new ArrayList<>();
             if (tools.isEmpty()) {
@@ -232,11 +214,13 @@ public class AdminService {
             if (normalizedCandidates.isEmpty()) {
                 warnings.add("未能自动识别项目，请在高级填写中手动输入项目备注名。");
             }
+            if (!hasText(mcpUserId)) {
+                warnings.add("MCP 未暴露用户 ID；后续调用将使用 Token 自身的账号与项目权限上下文。");
+            }
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("ok", true);
-            result.put("ownerType", ownerType);
-            result.put("ownerId", ownerId);
-            result.put("primelayerUserId", ownerId);
+            result.put("feishuOpenId", feishuOpenId);
+            result.put("mcpUserId", hasText(mcpUserId) ? mcpUserId : null);
             result.put("toolCount", tools.size());
             result.put("tokenHashSuffix", tokenHashSuffix(token));
             result.put("projectCandidates", normalizedCandidates);
@@ -249,18 +233,53 @@ public class AdminService {
         }
     }
 
-    private void collectCandidatesFromReadOnlyTools(String token, List<Map<String, Object>> tools, List<Map<String, Object>> candidates) {
+    private List<Map<String, Object>> collectCandidatesFromReadOnlyTools(String token, List<Map<String, Object>> tools, List<Map<String, Object>> candidates) {
+        List<Map<String, Object>> responses = new ArrayList<>();
         tools.stream()
                 .map(tool -> String.valueOf(tool.getOrDefault("name", "")))
                 .filter(this::looksLikeReadOnlyMetadataTool)
+                .sorted(java.util.Comparator.comparingInt(this::identityToolPriority))
                 .limit(4)
                 .forEach(toolName -> {
                     try {
-                        collectProjectCandidates(mcpAdapter.callTool(token, toolName, Map.of()), candidates);
+                        Map<String, Object> response = mcpAdapter.callTool(token, toolName, Map.of());
+                        responses.add(response);
+                        collectProjectCandidates(response, candidates);
                     } catch (Exception ignored) {
                         // Some metadata tools still need arguments. Verification only requires tools/list success.
                     }
                 });
+        return List.copyOf(responses);
+    }
+
+    private int identityToolPriority(String name) {
+        String value = name == null ? "" : name.toLowerCase();
+        return value.contains("account") || value.contains("profile") || value.contains("user")
+                || value.equals("me") ? 0 : 1;
+    }
+
+    @SuppressWarnings("unchecked")
+    private String findMcpUserId(Object node) {
+        if (node instanceof Map<?, ?> raw) {
+            Map<String, Object> map = (Map<String, Object>) raw;
+            for (String key : List.of("primelayer_user_id", "primelayerUserId", "user_id", "userId")) {
+                Object value = map.get(key);
+                if (value != null && !String.valueOf(value).isBlank()) return String.valueOf(value).trim();
+            }
+            for (Object value : map.values()) {
+                String found = findMcpUserId(value);
+                if (hasText(found)) return found;
+            }
+        } else if (node instanceof List<?> list) {
+            for (Object value : list) {
+                String found = findMcpUserId(value);
+                if (hasText(found)) return found;
+            }
+        } else if (node instanceof String text) {
+            Object parsed = parseJsonText(text);
+            if (parsed != null) return findMcpUserId(parsed);
+        }
+        return "";
     }
 
     private boolean looksLikeReadOnlyMetadataTool(String toolName) {
@@ -318,6 +337,9 @@ public class AdminService {
             for (Object item : list) {
                 collectProjectCandidates(item, candidates);
             }
+        } else if (node instanceof String text) {
+            Object parsed = parseJsonText(text);
+            if (parsed != null) collectProjectCandidates(parsed, candidates);
         }
     }
 
@@ -338,7 +360,8 @@ public class AdminService {
         candidate.put("projectId", hasText(projectId) ? projectId : projectName);
         candidate.put("projectName", hasText(projectName) ? projectName : projectId);
         candidate.put("workspace", firstText(map, "workspace", "workspaceName", "workspace_name"));
-        candidate.put("tenant", firstText(map, "tenant", "tenantName", "tenant_name"));
+        candidate.put("tenant", firstText(map, "tenant", "tenantName", "tenant_name",
+                "tenantFullName", "tenantShortName"));
         candidate.put("source", "mcp");
         return candidate;
     }
@@ -403,6 +426,22 @@ public class AdminService {
             throw new IllegalArgumentException(message);
         }
         return cleaned;
+    }
+
+    private String optionalText(Object value) {
+        if (value == null) return null;
+        String cleaned = clean(String.valueOf(value));
+        return hasText(cleaned) ? cleaned : null;
+    }
+
+    private Object parseJsonText(String value) {
+        String cleaned = clean(value);
+        if (!(cleaned.startsWith("{") || cleaned.startsWith("["))) return null;
+        try {
+            return objectMapper.readValue(cleaned, Object.class);
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private String firstNonBlank(String... values) {

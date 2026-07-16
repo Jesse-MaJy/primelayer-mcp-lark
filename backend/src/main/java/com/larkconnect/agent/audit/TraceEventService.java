@@ -286,6 +286,7 @@ public class TraceEventService {
             case "COMPLETED" -> "COMPLETED";
             case "PARTIAL" -> "PARTIAL";
             case "FAILED" -> "FAILED";
+            case "CANCELLED" -> "CANCELLED";
             default -> "RUNNING";
         };
     }

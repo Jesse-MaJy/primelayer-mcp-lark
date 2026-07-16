@@ -40,6 +40,8 @@ public class UnifiedQueryService {
     static final int MAX_FINAL_EVIDENCE_CHARS = 192_000;
     static final int MAX_DISCOVERY_ITEMS = 100;
     static final int MAX_EVIDENCE_ITEMS = 5;
+    static final int FORM_RANKING_BATCH_SIZE = 50;
+    private static final String ROUTING_MARKER = "LARK_CONNECT_ROUTING_DECISION:";
     private static final Set<String> DATE_ARGUMENT_NAMES = Set.of(
             "date", "target_date", "targetDate", "report_date", "reportDate",
             "start_date", "startDate", "end_date", "endDate",
@@ -53,6 +55,12 @@ public class UnifiedQueryService {
     private static final List<String> FORM_ID_LIST_ARGUMENT_NAMES = List.of("form_ids", "formIds", "resource_ids", "resourceIds");
     private static final List<String> DISCOVERY_TERMS = List.of(
             "质量", "安全", "进度", "风险", "缺陷", "隐患", "任务", "验收", "整改", "施工", "日报", "计划", "逾期", "问题");
+    private static final Set<String> FORM_WORKFLOW_TOOLS = Set.of(
+            "get_base_form_info", "get_account_info", "match_form_resource", "list_form_resource",
+            "get_form_definition", "query_form_data_list", "batch_get_form_value_detail");
+    private static final Set<String> FORM_DISCOVERY_TOOLS = Set.of(
+            "get_base_form_info", "get_account_info", "match_form_resource", "list_form_resource",
+            "get_form_definition");
 
     private final DeepSeekConversationClient deepSeek;
     private final McpQueryGateway mcpGateway;
@@ -70,13 +78,18 @@ public class UnifiedQueryService {
     private final QueryCheckpointRepository checkpoints;
     private final PromptTemplateService promptTemplates;
     private final PromptReplayService replaySnapshots;
+    private final TaskCancellationGuard cancellationGuard;
+    private final ProjectScopeService projectScopeService;
+    private final int toolConfidenceThreshold;
+    private final int formConfidenceThreshold;
 
     @Autowired
     public UnifiedQueryService(DeepSeekConversationClient deepSeek, McpQueryGateway mcpGateway,
                                McpToolDefinitionMapper toolMapper, ConversationHistoryProvider historyProvider,
                                ObjectMapper objectMapper, AnswerPresentationParser presentationParser, Clock clock,
                                AppProperties properties, QueryCheckpointRepository checkpoints,
-                               PromptTemplateService promptTemplates, PromptReplayService replaySnapshots) {
+                               PromptTemplateService promptTemplates, PromptReplayService replaySnapshots,
+                               TaskCancellationGuard cancellationGuard, ProjectScopeService projectScopeService) {
         this.deepSeek = deepSeek;
         this.mcpGateway = mcpGateway;
         this.toolMapper = toolMapper;
@@ -93,6 +106,12 @@ public class UnifiedQueryService {
         this.checkpoints = checkpoints;
         this.promptTemplates = promptTemplates;
         this.replaySnapshots = replaySnapshots;
+        this.cancellationGuard = cancellationGuard;
+        this.projectScopeService = projectScopeService;
+        this.toolConfidenceThreshold = confidenceThreshold(
+                properties.agent().toolSelectionConfidenceThreshold(), "工具置信度");
+        this.formConfidenceThreshold = confidenceThreshold(
+                properties.agent().formSelectionConfidenceThreshold(), "表单置信度");
     }
 
     public UnifiedQueryService(DeepSeekConversationClient deepSeek, McpQueryGateway mcpGateway,
@@ -114,6 +133,10 @@ public class UnifiedQueryService {
         this.checkpoints = null;
         this.promptTemplates = null;
         this.replaySnapshots = null;
+        this.cancellationGuard = null;
+        this.projectScopeService = null;
+        this.toolConfidenceThreshold = 70;
+        this.formConfidenceThreshold = 80;
     }
 
     UnifiedQueryService(DeepSeekConversationClient deepSeek, McpQueryGateway mcpGateway,
@@ -129,16 +152,34 @@ public class UnifiedQueryService {
         this.maxStagePlanningCalls = DEFAULT_MAX_STAGE_PLANNING_CALLS;
         this.promptTemplates = null;
         this.replaySnapshots = null;
+        this.cancellationGuard = null;
+        this.projectScopeService = null;
+        this.toolConfidenceThreshold = 70;
+        this.formConfidenceThreshold = 80;
     }
 
     public QueryResult query(QueryRequest request) {
         long started = System.currentTimeMillis();
+        checkCancelled(request.requestId());
         String selectedModel = deepSeek.model();
-        McpQueryGateway.QueryContext context = mcpGateway.loadContext(
-                request.requestId(), request.openId(), request.chatId(), request.chatType());
-        McpToolDefinitionMapper.MappedTools mapped = toolMapper.map(context.availableTools());
         List<ConversationHistoryService.HistoryTurn> history = historyProvider.load(
                 request.chatType(), request.openId(), request.chatId(), request.requestId());
+        ProjectScopeService.ScopeResolution scope = projectScopeService == null
+                ? ProjectScopeService.ScopeResolution.proceed(request.question(), List.of(), null)
+                : projectScopeService.resolve(request, history);
+        if (scope.terminal()) {
+            String answer = scope.answer();
+            return new QueryResult(scope.terminalPath(), answer,
+                    AnswerPresentation.markdownOnly(answer), null, selectedModel,
+                    0, 0, 0, 0, 0, history.size(), List.of(), scope.projectIds(), List.of(),
+                    null, 0, 0, 0, 0, 0, 0, false, System.currentTimeMillis() - started);
+        }
+        request = new QueryRequest(request.requestId(), scope.effectiveQuestion(), request.chatType(),
+                request.openId(), request.chatId(), request.createdAt());
+        McpQueryGateway.QueryContext context = mcpGateway.loadContext(
+                request.requestId(), request.openId(), request.chatId(), request.chatType(), scope.projectIds());
+        checkCancelled(request.requestId());
+        McpToolDefinitionMapper.MappedTools mapped = toolMapper.map(context.availableTools());
         TemporalContext temporal = resolveTemporalContext(request.question());
         ResumedState resumed = resumeState(request.requestId());
         List<Map<String, Object>> messages = new ArrayList<>(resumed.messages());
@@ -157,6 +198,9 @@ public class UnifiedQueryService {
         Set<String> toolsUsed = new LinkedHashSet<>(resumed.toolsUsed());
         Set<String> projectsQueried = new LinkedHashSet<>(resumed.projectsQueried());
         List<String> failures = new ArrayList<>(resumed.failures());
+        if (scope.notice() != null && !scope.notice().isBlank() && !failures.contains(scope.notice())) {
+            failures.add(scope.notice());
+        }
         List<String> pendingDependencies = new ArrayList<>(context.traceEventIds());
         String lastModelEventId = null;
         int modelCallIndex = 0;
@@ -170,18 +214,105 @@ public class UnifiedQueryService {
         Map<String, CompactedObservation> compactionCache = new LinkedHashMap<>();
         Map<String, FormCollection> formCollections = new LinkedHashMap<>(resumed.formCollections());
         Map<String, FormCandidate> candidateForms = new LinkedHashMap<>(resumed.candidateForms());
+        List<FormCandidate> rejectedForms = new ArrayList<>(resumed.rejectedForms());
+        int discoveredFormCount = Math.max(resumed.discoveredFormCount(),
+                candidateForms.size() + rejectedForms.size());
         List<Map<String, Object>> collectedSummaries = new ArrayList<>(resumed.collectedSummaries());
         Set<String> progressFingerprints = new LinkedHashSet<>();
         Set<String> selectedFormIds = new LinkedHashSet<>(resumed.selectedFormIds());
-        boolean dataQuestion = requiresProjectData(request.question());
         boolean stagedOrchestration = supportsStagedOrchestration(mapped);
+        String forcedPath = null;
+        RoutingDecision routing = routingDecision(messages);
+        if (routing == null) {
+            savePhase(request.requestId(), QueryPhase.ROUTING, messages, toolRounds, logicalCalls, physicalCalls,
+                    pages, chunks, inputTokens, outputTokens, cacheHits, successfulObservations, null);
+            checkCancelled(request.requestId());
+            DeepSeekConversationClient.Completion routed = deepSeek.completeStructured(
+                    new DeepSeekConversationClient.TraceContext(request.requestId(), null,
+                            List.copyOf(pendingDependencies), 1, "tool_routing", "MCP 工具置信度路由",
+                            Map.of("toolConfidenceThreshold", toolConfidenceThreshold)),
+                    selectedModel, routingMessages(messages, context));
+            checkCancelled(request.requestId());
+            inputTokens += routed.inputTokens();
+            outputTokens += routed.outputTokens();
+            modelCallIndex++;
+            if (hasText(routed.traceEventId())) {
+                lastModelEventId = routed.traceEventId();
+                pendingDependencies = List.of(routed.traceEventId());
+            }
+            routing = parseRoutingDecision(routed.content(), mapped);
+            messages.add(Map.of("role", "system", "content", ROUTING_MARKER + writeJson(routing)));
+            savePhase(request.requestId(), QueryPhase.ROUTING, messages, toolRounds, logicalCalls, physicalCalls,
+                    pages, chunks, inputTokens, outputTokens, cacheHits, successfulObservations, null);
+        }
+        Set<String> acceptedTools = new LinkedHashSet<>(routing.acceptedTools(toolConfidenceThreshold));
+        resumed.pendingExecutions().stream().map(PendingExecution::originalToolName).forEach(acceptedTools::add);
+        boolean forceDiscoveryBeforeClarification = routing.decision() == RoutingDecisionType.NEEDS_CLARIFICATION
+                && context.availableTools().stream().map(tool -> String.valueOf(tool.get("name")))
+                .anyMatch(name -> "match_form_resource".equals(name) || "list_form_resource".equals(name));
+        boolean formWorkflow = stagedOrchestration && (forceDiscoveryBeforeClarification
+                || acceptedTools.stream().anyMatch(FORM_WORKFLOW_TOOLS::contains));
+        if (formWorkflow) {
+            // 路由模型只负责判断是否进入表单业务范围；一旦进入，Java 必须补齐只读依赖，
+            // 避免模型在发现阶段漏选后续 query_form_data_list 而提前结束链路。
+            context.availableTools().stream().map(tool -> String.valueOf(tool.get("name")))
+                    .filter(FORM_WORKFLOW_TOOLS::contains).forEach(acceptedTools::add);
+        }
+
+        List<FormCandidate> unscoredCandidates = candidateForms.values().stream()
+                .filter(candidate -> candidate.confidence() < 0).toList();
+        if (!unscoredCandidates.isEmpty()) {
+            Map<String, List<FormCandidate>> byProject = unscoredCandidates.stream().collect(
+                    java.util.stream.Collectors.groupingBy(candidate ->
+                                    candidate.projectIds().stream().findFirst().orElse(""),
+                            LinkedHashMap::new, java.util.stream.Collectors.toList()));
+            List<ExecutedCall> legacyExecutions = new ArrayList<>();
+            byProject.forEach((projectId, forms) -> {
+                Map<String, Object> payload = Map.of("forms", forms.stream().map(candidate -> Map.of(
+                        "formId", candidate.id(), "name", candidate.name(),
+                        "description", candidate.description())).toList());
+                McpQueryGateway.ToolObservation observation = new McpQueryGateway.ToolObservation(
+                        projectId, "", "match_form_resource", "SUCCEEDED", payload, null, 0, 0, false);
+                legacyExecutions.add(new ExecutedCall(new DeepSeekConversationClient.ToolCall(
+                        "legacy-form-ranking-" + projectId, "match_form_resource", Map.of()),
+                        "match_form_resource", List.of(observation), List.of(),
+                        "legacy-form-ranking-" + projectId, false));
+            });
+            FormRankingBatch ranking = rankDiscoveredForms(request.requestId(), selectedModel,
+                    request.question(), legacyExecutions, "resume", pendingDependencies);
+            unscoredCandidates.forEach(candidate -> candidateForms.remove(candidate.key()));
+            mergeRankedForms(candidateForms, rejectedForms, ranking);
+            discoveredFormCount = discoveredFormCount(candidateForms, rejectedForms);
+            inputTokens += ranking.inputTokens();
+            outputTokens += ranking.outputTokens();
+            modelCallIndex += ranking.modelCalls();
+            pendingDependencies.addAll(ranking.traceEventIds());
+        }
+
         int stagePlanningCalls = 0;
         int collectionPlanningCalls = 0;
         int planningLimit = stagedOrchestration ? maxStagePlanningCalls : maxPlanningRounds;
-        OrchestrationStage stage = resumed.orchestrationStage() != null
-                ? resumed.orchestrationStage()
-                : !stagedOrchestration || resumed.toolRounds() > 0
-                ? OrchestrationStage.COLLECTION_PLANNING : OrchestrationStage.CONTEXT;
+        OrchestrationStage stage;
+        if (routing.decision() == RoutingDecisionType.DIRECT_ANSWER) {
+            answer = hasText(routing.answer()) ? routing.answer() : "请提供更具体的问题。";
+            forcedPath = "direct_deepseek";
+            stage = OrchestrationStage.DONE;
+        } else if (!forceDiscoveryBeforeClarification && (routing.decision() != RoutingDecisionType.USE_MCP
+                || routing.mcpConfidence() < toolConfidenceThreshold || acceptedTools.isEmpty())) {
+            answer = hasText(routing.clarification()) ? routing.clarification()
+                    : "当前问题可能需要项目数据，但没有足够高置信度的 MCP 工具。请补充要查询的项目、业务范围或表单名称。";
+            forcedPath = "mcp_clarification";
+            stage = OrchestrationStage.DONE;
+        } else {
+            stage = resumed.orchestrationStage() != null
+                    ? resumed.orchestrationStage()
+                    : !stagedOrchestration || resumed.toolRounds() > 0
+                    ? OrchestrationStage.COLLECTION_PLANNING : OrchestrationStage.CONTEXT;
+        }
+        saveOrchestrationState(request.requestId(), phaseFor(stage), messages, toolRounds, logicalCalls,
+                physicalCalls, pages, chunks, inputTokens, outputTokens, cacheHits, successfulObservations,
+                null, stage, candidateForms, selectedFormIds, rejectedForms, discoveredFormCount,
+                formCollections, collectedSummaries, failures, toolsUsed, projectsQueried);
 
         if (!resumed.pendingExecutions().isEmpty() && remainingMs > 0) {
             List<ExecutedCall> resumedExecutions = resumePendingConcurrently(
@@ -204,7 +335,8 @@ public class UnifiedQueryService {
                         pollAttempts + 1, startedAt, delay, toolRounds, logicalCalls,
                         waitingPhysicalCalls, waitingPages, chunks, inputTokens, outputTokens,
                         cacheHits, successfulObservations, stage, candidateForms, selectedFormIds,
-                        formCollections, collectedSummaries, failures, toolsUsed, projectsQueried)) {
+                        rejectedForms, discoveredFormCount, formCollections, collectedSummaries,
+                        failures, toolsUsed, projectsQueried)) {
                     throw new QueryPendingException(delay);
                 }
             }
@@ -239,8 +371,16 @@ public class UnifiedQueryService {
                 registerFormCollection(formCollections, execution, compacted, failures);
             }
             if (stage == OrchestrationStage.MATCH_DISCOVERY || stage == OrchestrationStage.LIST_DISCOVERY) {
-                registerCandidates(candidateForms, resumedExecutions, request.question(),
-                        stage == OrchestrationStage.MATCH_DISCOVERY);
+                FormRankingBatch ranking = rankDiscoveredForms(request.requestId(), selectedModel,
+                        request.question(), resumedExecutions,
+                        stage == OrchestrationStage.MATCH_DISCOVERY ? "match" : "list",
+                        resumedDependencies);
+                mergeRankedForms(candidateForms, rejectedForms, ranking);
+                discoveredFormCount = discoveredFormCount(candidateForms, rejectedForms);
+                inputTokens += ranking.inputTokens();
+                outputTokens += ranking.outputTokens();
+                modelCallIndex += ranking.modelCalls();
+                resumedDependencies.addAll(ranking.traceEventIds());
             }
             if (stage == OrchestrationStage.CONTEXT) {
                 stage = OrchestrationStage.MATCH_DISCOVERY;
@@ -252,8 +392,10 @@ public class UnifiedQueryService {
                         ? OrchestrationStage.DONE : OrchestrationStage.COLLECTION_PLANNING;
             }
             pendingDependencies = distinctNonBlank(resumedDependencies);
-            saveCheckpoint(request.requestId(), messages, toolRounds, logicalCalls, physicalCalls,
-                    pages, chunks, inputTokens, outputTokens, cacheHits, successfulObservations, null);
+            saveOrchestrationState(request.requestId(), phaseFor(stage), messages, toolRounds, logicalCalls,
+                    physicalCalls, pages, chunks, inputTokens, outputTokens, cacheHits, successfulObservations,
+                    null, stage, candidateForms, selectedFormIds, rejectedForms, discoveredFormCount,
+                    formCollections, collectedSummaries, failures, toolsUsed, projectsQueried);
         }
 
         while (stage != OrchestrationStage.DONE) {
@@ -276,7 +418,8 @@ public class UnifiedQueryService {
                 }
                 break;
             }
-            List<Map<String, Object>> stageTools = toolsForStage(mapped, stage);
+            checkCancelled(request.requestId());
+            List<Map<String, Object>> stageTools = toolsForStage(mapped, stage, acceptedTools);
             if (stageTools.isEmpty()) {
                 stage = stageWhenToolsUnavailable(stage, failures);
                 continue;
@@ -288,7 +431,7 @@ public class UnifiedQueryService {
                     && stage == OrchestrationStage.COLLECTION_PLANNING && !candidateForms.isEmpty();
             if (deterministicFormCollection) {
                 requested = prepareCollectionCalls(List.of(), mapped, context, candidateForms,
-                        selectedFormIds, failures);
+                        selectedFormIds, failures, acceptedTools);
             } else {
                 closeIncompleteToolCalls(messages);
                 try {
@@ -306,6 +449,7 @@ public class UnifiedQueryService {
                                     stagedOrchestration ? labelFor(stage)
                                             : "DeepSeek 决策/回答 第 " + roundIndex + " 轮"),
                             selectedModel, messages, stageTools, true);
+                    checkCancelled(request.requestId());
                     stagePlanningCalls++;
                     modelCallIndex++;
                     if (hasText(completion.traceEventId())) lastModelEventId = completion.traceEventId();
@@ -322,15 +466,12 @@ public class UnifiedQueryService {
                 outputTokens += completion.outputTokens();
                 modelRequested = completion.toolCalls() == null ? List.of() : completion.toolCalls();
                 requested = prepareStageCalls(stage, modelRequested, mapped, context, request.question(),
-                        candidateForms, selectedFormIds, failures);
+                        candidateForms, selectedFormIds, failures, acceptedTools);
             }
             Set<String> modelCallIds = modelRequested.stream()
                     .map(DeepSeekConversationClient.ToolCall::id).collect(java.util.stream.Collectors.toSet());
             if (requested.isEmpty()) {
                 if (!stagedOrchestration) {
-                    answer = completion.content();
-                    stage = OrchestrationStage.DONE;
-                } else if (stage == OrchestrationStage.CONTEXT && !dataQuestion) {
                     answer = completion.content();
                     stage = OrchestrationStage.DONE;
                 } else if (stage == OrchestrationStage.MATCH_DISCOVERY) {
@@ -392,6 +533,7 @@ public class UnifiedQueryService {
             List<ExecutedCall> freshExecutions = executeConcurrently(
                     request.requestId(), context, mapped, uniqueMisses, temporal,
                     completion == null ? null : completion.traceEventId(), toolRounds);
+            checkCancelled(request.requestId());
             Map<String, ExecutedCall> freshThisRound = new LinkedHashMap<>();
             for (ExecutedCall fresh : freshExecutions) {
                 String signature = callSignature(mapped, fresh.call(), context, temporal);
@@ -419,8 +561,8 @@ public class UnifiedQueryService {
                 if (savePendingExecutions(request.requestId(), messages, executions, 1, clock.instant(), delay,
                         toolRounds, logicalCalls, waitingPhysicalCalls, waitingPages,
                         chunks, inputTokens, outputTokens, cacheHits, successfulObservations,
-                        stage, candidateForms, selectedFormIds, formCollections, collectedSummaries,
-                        failures, toolsUsed, projectsQueried)) {
+                        stage, candidateForms, selectedFormIds, rejectedForms, discoveredFormCount,
+                        formCollections, collectedSummaries, failures, toolsUsed, projectsQueried)) {
                     throw new QueryPendingException(delay);
                 }
             }
@@ -470,8 +612,15 @@ public class UnifiedQueryService {
                 registerFormCollection(formCollections, execution, compacted, failures);
             }
             if (stage == OrchestrationStage.MATCH_DISCOVERY || stage == OrchestrationStage.LIST_DISCOVERY) {
-                registerCandidates(candidateForms, executions, request.question(),
-                        stage == OrchestrationStage.MATCH_DISCOVERY);
+                FormRankingBatch ranking = rankDiscoveredForms(request.requestId(), selectedModel,
+                        request.question(), executions,
+                        stage == OrchestrationStage.MATCH_DISCOVERY ? "match" : "list", nextDependencies);
+                mergeRankedForms(candidateForms, rejectedForms, ranking);
+                discoveredFormCount = discoveredFormCount(candidateForms, rejectedForms);
+                inputTokens += ranking.inputTokens();
+                outputTokens += ranking.outputTokens();
+                modelCallIndex += ranking.modelCalls();
+                nextDependencies.addAll(ranking.traceEventIds());
             }
             int discoveredCandidates = candidateForms.size();
             long dataCallsThisStage = executions.stream()
@@ -513,19 +662,29 @@ public class UnifiedQueryService {
             consecutiveNoProgress = madeProgress ? 0 : consecutiveNoProgress + 1;
             if (consecutiveNoProgress >= maxNoProgressDecisions) stopReason = "no_progress";
             pendingDependencies = distinctNonBlank(nextDependencies);
-            saveCheckpoint(request.requestId(), messages, toolRounds, logicalCalls, physicalCalls,
-                    pages, chunks, inputTokens, outputTokens, cacheHits, successfulObservations, stopReason);
+            saveOrchestrationState(request.requestId(), phaseFor(stage), messages, toolRounds, logicalCalls,
+                    physicalCalls, pages, chunks, inputTokens, outputTokens, cacheHits, successfulObservations,
+                    stopReason, stage, candidateForms, selectedFormIds, rejectedForms, discoveredFormCount,
+                    formCollections, collectedSummaries, failures, toolsUsed, projectsQueried);
             if (stopReason != null) break;
+        }
+
+        if (forcedPath == null && stagedOrchestration && candidateForms.isEmpty()
+                && formCollections.isEmpty() && stage == OrchestrationStage.DONE) {
+            answer = formClarification(rejectedForms);
+            forcedPath = "mcp_clarification";
         }
 
         FormAnalysisBatch formAnalysis = FormAnalysisBatch.empty();
         if (!formCollections.isEmpty() && !"hard_timeout".equals(stopReason)
                 && !"model_token_budget".equals(stopReason)) {
+            checkCancelled(request.requestId());
             savePhase(request.requestId(), QueryPhase.ANALYZING_FORMS, messages, toolRounds, logicalCalls,
                     physicalCalls, pages, chunks, inputTokens, outputTokens, cacheHits,
                     successfulObservations, stopReason);
             formAnalysis = analyzeForms(request.requestId(), selectedModel,
                     List.copyOf(formCollections.values()), pendingDependencies);
+            checkCancelled(request.requestId());
             inputTokens += formAnalysis.inputTokens();
             outputTokens += formAnalysis.outputTokens();
             chunks += formAnalysis.chunkCount();
@@ -534,6 +693,20 @@ public class UnifiedQueryService {
                 pendingDependencies = formAnalysis.traceEventIds();
                 lastModelEventId = formAnalysis.traceEventIds().get(formAnalysis.traceEventIds().size() - 1);
             }
+        }
+
+        boolean formDataUnavailable = forcedPath == null && formWorkflow && !candidateForms.isEmpty()
+                && formCollections.isEmpty();
+        if (formDataUnavailable) {
+            answer = "暂时无法获取相关表单的业务数据，因此无法形成可靠的工程管理结论。";
+            forcedPath = "mcp_deepseek";
+        }
+        List<String> managementLimitations = managementLimitations(
+                formWorkflow, candidateForms, formCollections, formAnalysis, stopReason, failures);
+        if (forcedPath == null && logicalCalls > 0 && successfulObservations == 0) {
+            answer = "项目数据暂不可用，本次查询没有取得可用于工程管理分析的业务数据。";
+            forcedPath = "mcp_deepseek";
+            managementLimitations.add("未取得可用于分析的业务数据");
         }
 
         boolean deterministicStop = "hard_timeout".equals(stopReason)
@@ -546,13 +719,15 @@ public class UnifiedQueryService {
                     physicalCalls, pages, chunks, inputTokens, outputTokens, cacheHits,
                     successfulObservations, stopReason);
             List<Map<String, Object>> finalMessages = finalAnswerMessages(
-                    request.question(), temporal, collectedSummaries, formAnalysis.results(), stopReason, failures);
+                    request.question(), temporal, collectedSummaries, formAnalysis.results(),
+                    stopReason, managementLimitations);
             DeepSeekConversationClient.Completion finalCompletion;
             try {
                 finalCompletion = deepSeek.finalizeAnswer(new DeepSeekConversationClient.TraceContext(
                                 request.requestId(), null, List.copyOf(pendingDependencies), toolRounds + 1,
                                 "final_answer", "DeepSeek 最终回答"),
                         selectedModel, finalMessages);
+                checkCancelled(request.requestId());
                 modelCallIndex++;
                 if (hasText(finalCompletion.traceEventId())) lastModelEventId = finalCompletion.traceEventId();
                 inputTokens += finalCompletion.inputTokens();
@@ -564,6 +739,7 @@ public class UnifiedQueryService {
                     deterministicStop = true;
                     failures.add("DeepSeek 最终回答响应处理失败，已基于成功取得的 MCP 数据生成部分结果："
                             + readable(e));
+                    managementLimitations.add("最终汇总模型响应异常，回答仅保留已验证的确定性结果");
                     answer = deterministicStopAnswer(stopReason, messages, resumed);
                 } else {
                     throw queryFailure(e, selectedModel, toolRounds, logicalCalls, physicalCalls, pages, chunks,
@@ -572,21 +748,17 @@ public class UnifiedQueryService {
             }
         }
 
-        String path = logicalCalls == 0 ? "direct_deepseek" : "mcp_deepseek";
-        if (logicalCalls > 0 && successfulObservations == 0) {
-            answer = "项目数据暂不可用，本次 MCP 查询没有取得可用于分析的成功结果。" + failureSuffix(failures);
-        } else if (!failures.isEmpty()) {
-            answer = safe(answer) + "\n\n数据缺口：" + String.join("；", distinct(failures));
-        }
-        if (stopReason != null) {
-            answer = safe(answer) + "\n\n说明：" + stopReasonDescription(stopReason)
-                    + "，以上结论仅基于已成功取得的数据。";
+        String path = forcedPath != null ? forcedPath : logicalCalls == 0 ? "direct_deepseek" : "mcp_deepseek";
+        managementLimitations = distinct(managementLimitations);
+        boolean managementConclusionLimited = !managementLimitations.isEmpty();
+        if (managementConclusionLimited && !formDataUnavailable && !deterministicStop) {
+            answer = safe(answer) + "\n\n结论限制：" + String.join("；", managementLimitations) + "。";
         }
 
         String draftAnswer = safe(answer);
         AnswerPresentationParser.ParsedPresentation parsed;
         try {
-            if (deterministicStop || logicalCalls > 0) {
+            if (deterministicStop || logicalCalls > 0 || "mcp_clarification".equals(path)) {
                 parsed = presentationParser.parse(null, draftAnswer);
             } else {
             List<String> presentationDependencies = hasText(lastModelEventId)
@@ -598,6 +770,7 @@ public class UnifiedQueryService {
                     Map.of("role", "system", "content", presentationInstruction()),
                     Map.of("role", "user", "content", draftAnswer)
             ));
+            checkCancelled(request.requestId());
             inputTokens += formatted.inputTokens();
             outputTokens += formatted.outputTokens();
             parsed = presentationParser.parse(formatted.content(), draftAnswer);
@@ -613,7 +786,9 @@ public class UnifiedQueryService {
         return new QueryResult(path, parsed.presentation().plainText(), parsed.presentation(), parsed.json(),
                 selectedModel, toolRounds, logicalCalls, physicalCalls,
                 pages, chunks, history.size(), List.copyOf(toolsUsed), List.copyOf(projectsQueried),
-                distinct(failures), stopReason, inputTokens, outputTokens, cacheHits, System.currentTimeMillis() - started);
+                distinct(failures), stopReason, inputTokens, outputTokens, cacheHits,
+                discoveredFormCount, candidateForms.size(), rejectedForms.size(),
+                managementConclusionLimited, System.currentTimeMillis() - started);
     }
 
     private String presentationInstruction() {
@@ -667,7 +842,7 @@ public class UnifiedQueryService {
                 你是 Lark Connect 的统一问答与数据分析助手。当前会话类型：%s。可访问项目：%s。%s。
                 当前日期：%s（Asia/Shanghai）。%s
                 判断问题是否需要项目实时数据：需要时必须调用提供的 MCP 工具，绝不能凭常识编造项目事实；不需要时直接回答。
-                工具参数 projectIds 必须来自可访问项目。私聊有多个项目且当前问题与历史均不能确定项目时，先直接追问项目，不调用工具。
+                工具参数 projectIds 必须来自可访问项目；项目范围已由平台在进入本阶段前确定，不得再次追问项目范围。
                 采用严格两阶段规划：第一轮只选择当前参数已经确定的发现/上下文工具；收到发现结果后仅允许一次重规划，
                 一次性给出所有具有具体表单 ID 的数据采集调用。Java 会独立并发执行 MCP、分页、重试和去重；不要逐页调用工具。
                 第二轮之后不得继续试探新工具。部分失败必须在最终答案中说明范围、失败项和局限。
@@ -678,6 +853,97 @@ public class UnifiedQueryService {
                 %s
                 """.formatted("group".equals(chatType) ? "群聊" : "私聊", projects, availability,
                 temporal.today(), temporal.instruction(), business);
+    }
+
+    private List<Map<String, Object>> routingMessages(List<Map<String, Object>> conversation,
+                                                       McpQueryGateway.QueryContext context) {
+        List<Map<String, Object>> tools = context.availableTools().stream().map(tool -> {
+            Map<String, Object> compact = new LinkedHashMap<>();
+            compact.put("name", tool.get("name"));
+            compact.put("description", tool.get("description"));
+            compact.put("inputSchema", boundedValue(tool.get("inputSchema"), 40, 1_000));
+            compact.put("supportedProjectIds", tool.get("supportedProjectIds"));
+            return compact;
+        }).toList();
+        List<Map<String, Object>> result = new ArrayList<>(conversation);
+        result.add(Map.of("role", "system", "content", """
+                你是 MCP 工具相关性路由器。只输出 JSON 对象，不得调用工具。
+                decision 只能是 DIRECT_ANSWER、USE_MCP、NEEDS_CLARIFICATION。
+                mcpConfidence 和每项工具 confidence 必须是 0 到 100 的数字。
+                DIRECT_ANSWER 表示问题不需要任何项目实时数据，此时 answer 必须直接回答问题。
+                USE_MCP 表示必须查询项目实时数据；tools 必须列出所有必要工具，包括上下文、发现、兜底发现和数据采集依赖。
+                NEEDS_CLARIFICATION 表示问题需要项目数据但范围不足，此时 clarification 必须给出具体追问。
+                不得因为工具存在就提高评分；只按当前问题和历史上下文判断相关性。
+                输出格式：
+                {"decision":"USE_MCP","mcpConfidence":85,"answer":"","clarification":"",
+                 "tools":[{"name":"query_form_data_list","confidence":90,"reason":"需要查询表单记录"}]}
+                当前可用只读 MCP 工具：
+                """ + writeJson(tools)));
+        return List.copyOf(result);
+    }
+
+    private RoutingDecision routingDecision(List<Map<String, Object>> messages) {
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            Object content = messages.get(i).get("content");
+            if (content == null || !String.valueOf(content).startsWith(ROUTING_MARKER)) continue;
+            return parseRoutingDecision(String.valueOf(content).substring(ROUTING_MARKER.length()), null);
+        }
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private RoutingDecision parseRoutingDecision(String content, McpToolDefinitionMapper.MappedTools mapped) {
+        try {
+            Map<String, Object> value = objectMapper.readValue(jsonText(content), Map.class);
+            RoutingDecisionType decision;
+            try {
+                decision = RoutingDecisionType.valueOf(String.valueOf(value.getOrDefault(
+                        "decision", "NEEDS_CLARIFICATION")).toUpperCase(java.util.Locale.ROOT));
+            } catch (Exception ignored) {
+                decision = RoutingDecisionType.NEEDS_CLARIFICATION;
+            }
+            double mcpConfidence = validConfidence(value.get("mcpConfidence"));
+            Set<String> allowedNames = mapped == null ? null : new LinkedHashSet<>(mapped.aliases().values());
+            List<ToolConfidence> scores = new ArrayList<>();
+            if (value.get("tools") instanceof List<?> tools) {
+                for (Object raw : tools) {
+                    if (!(raw instanceof Map<?, ?> map)) continue;
+                    String name = String.valueOf(map.get("name"));
+                    if (allowedNames != null && !allowedNames.contains(name)) continue;
+                    double confidence = validConfidence(map.get("confidence"));
+                    scores.add(new ToolConfidence(name, confidence,
+                            map.get("reason") == null ? "" : String.valueOf(map.get("reason"))));
+                }
+            }
+            return new RoutingDecision(decision, mcpConfidence,
+                    value.get("answer") == null ? "" : String.valueOf(value.get("answer")),
+                    value.get("clarification") == null ? "" : String.valueOf(value.get("clarification")),
+                    List.copyOf(scores));
+        } catch (Exception ignored) {
+            return new RoutingDecision(RoutingDecisionType.NEEDS_CLARIFICATION, 0, "",
+                    "我暂时无法确定应查询哪些项目数据。请补充项目、业务范围或表单名称。", List.of());
+        }
+    }
+
+    private String jsonText(String content) {
+        String value = content == null ? "" : content.trim();
+        if (value.startsWith("```")) {
+            int firstLine = value.indexOf('\n');
+            int lastFence = value.lastIndexOf("```");
+            if (firstLine >= 0 && lastFence > firstLine) value = value.substring(firstLine + 1, lastFence).trim();
+        }
+        return value;
+    }
+
+    private double validConfidence(Object value) {
+        double score;
+        if (value instanceof Number number) score = number.doubleValue();
+        else {
+            try { score = Double.parseDouble(String.valueOf(value)); }
+            catch (Exception ignored) { return -1; }
+        }
+        if (!Double.isFinite(score) || score < 0 || score > 100) return -1;
+        return score;
     }
 
     private TemporalContext resolveTemporalContext(String question) {
@@ -695,11 +961,25 @@ public class UnifiedQueryService {
     }
 
     private List<Map<String, Object>> toolsForStage(McpToolDefinitionMapper.MappedTools mapped,
-                                                     OrchestrationStage stage) {
+                                                     OrchestrationStage stage,
+                                                     Set<String> acceptedTools) {
         if (!supportsStagedOrchestration(mapped)) {
-            return stage == OrchestrationStage.COLLECTION_PLANNING ? mapped.deepSeekTools() : List.of();
+            return stage == OrchestrationStage.COLLECTION_PLANNING
+                    ? mapped.deepSeekTools().stream().filter(tool -> acceptedTools.contains(
+                    mapped.aliases().get(String.valueOf(objectMap(tool.get("function")).get("name"))))).toList()
+                    : List.of();
         }
-        Set<String> allowed = switch (stage) {
+        Set<String> allowed = allowedToolsForStage(stage);
+        return mapped.deepSeekTools().stream().filter(tool -> {
+            Map<String, Object> function = objectMap(tool.get("function"));
+            String alias = String.valueOf(function.getOrDefault("name", ""));
+            String original = mapped.aliases().get(alias);
+            return allowed.contains(original) && acceptedTools.contains(original);
+        }).toList();
+    }
+
+    private Set<String> allowedToolsForStage(OrchestrationStage stage) {
+        return switch (stage) {
             case CONTEXT -> Set.of("get_base_form_info", "get_account_info");
             case MATCH_DISCOVERY -> Set.of("match_form_resource");
             case LIST_DISCOVERY -> Set.of("list_form_resource");
@@ -707,17 +987,11 @@ public class UnifiedQueryService {
                     "batch_get_form_value_data", "batch_get_form_value_detail");
             case DONE -> Set.of();
         };
-        return mapped.deepSeekTools().stream().filter(tool -> {
-            Map<String, Object> function = objectMap(tool.get("function"));
-            String alias = String.valueOf(function.getOrDefault("name", ""));
-            return allowed.contains(mapped.aliases().get(alias));
-        }).toList();
     }
 
     private boolean supportsStagedOrchestration(McpToolDefinitionMapper.MappedTools mapped) {
-        Set<String> discoveryTools = Set.of(
-                "get_base_form_info", "get_account_info", "match_form_resource", "list_form_resource");
-        return mapped.aliases().values().stream().anyMatch(discoveryTools::contains);
+        return mapped.aliases().values().stream().anyMatch(
+                tool -> "match_form_resource".equals(tool) || "list_form_resource".equals(tool));
     }
 
     private OrchestrationStage stageWhenToolsUnavailable(OrchestrationStage stage, List<String> failures) {
@@ -804,7 +1078,7 @@ public class UnifiedQueryService {
             OrchestrationStage stage, List<DeepSeekConversationClient.ToolCall> modelCalls,
             McpToolDefinitionMapper.MappedTools mapped, McpQueryGateway.QueryContext context,
             String question, Map<String, FormCandidate> candidates, Set<String> selectedFormIds,
-            List<String> failures) {
+            List<String> failures, Set<String> acceptedTools) {
         List<DeepSeekConversationClient.ToolCall> prepared = new ArrayList<>();
         Set<String> originals = new LinkedHashSet<>();
         for (DeepSeekConversationClient.ToolCall call : modelCalls) {
@@ -813,6 +1087,11 @@ public class UnifiedQueryService {
                 original = mapped.originalName(call.name());
             } catch (Exception invalid) {
                 failures.add("阶段 " + stage + " 收到未知工具调用：" + readable(invalid));
+                continue;
+            }
+            if (!acceptedTools.contains(original)
+                    || (supportsStagedOrchestration(mapped) && !allowedToolsForStage(stage).contains(original))) {
+                failures.add("阶段 " + stage + " 拒绝执行未通过路由评分或阶段白名单的工具：" + original);
                 continue;
             }
             Map<String, Object> input = new LinkedHashMap<>(call.input());
@@ -832,21 +1111,24 @@ public class UnifiedQueryService {
 
         if (stage == OrchestrationStage.CONTEXT) {
             for (String tool : List.of("get_base_form_info", "get_account_info")) {
-                if (hasOriginal(mapped, tool) && !originals.contains(tool)) {
+                if (hasOriginal(mapped, tool) && acceptedTools.contains(tool) && !originals.contains(tool)) {
                     prepared.add(deterministicCall(mapped, context, tool, Map.of(), "context"));
                 }
             }
         } else if (stage == OrchestrationStage.MATCH_DISCOVERY
                 && hasOriginal(mapped, "match_form_resource")
+                && acceptedTools.contains("match_form_resource")
                 && !originals.contains("match_form_resource")) {
             prepared.add(deterministicCall(mapped, context, "match_form_resource",
                     Map.of("name", discoveryName(question)), "match"));
         } else if (stage == OrchestrationStage.LIST_DISCOVERY
                 && hasOriginal(mapped, "list_form_resource")
+                && acceptedTools.contains("list_form_resource")
                 && !originals.contains("list_form_resource")) {
             prepared.add(deterministicCall(mapped, context, "list_form_resource", Map.of(), "list"));
         } else if (stage == OrchestrationStage.COLLECTION_PLANNING && !candidates.isEmpty()) {
-            prepared = prepareCollectionCalls(prepared, mapped, context, candidates, selectedFormIds, failures);
+            prepared = prepareCollectionCalls(prepared, mapped, context, candidates, selectedFormIds,
+                    failures, acceptedTools);
         }
         return List.copyOf(prepared);
     }
@@ -908,7 +1190,7 @@ public class UnifiedQueryService {
     private List<DeepSeekConversationClient.ToolCall> prepareCollectionCalls(
             List<DeepSeekConversationClient.ToolCall> planned, McpToolDefinitionMapper.MappedTools mapped,
             McpQueryGateway.QueryContext context, Map<String, FormCandidate> candidates,
-            Set<String> selectedFormIds, List<String> failures) {
+            Set<String> selectedFormIds, List<String> failures, Set<String> acceptedTools) {
         List<DeepSeekConversationClient.ToolCall> prepared = new ArrayList<>();
         Set<String> covered = new LinkedHashSet<>();
         Set<String> candidateIds = candidates.values().stream().map(FormCandidate::id)
@@ -933,7 +1215,7 @@ public class UnifiedQueryService {
         for (FormCandidate candidate : candidates.values()) {
             if (prepared.size() >= MAX_TOOL_CALLS_PER_ROUND || covered.contains(candidate.key())
                     || selectedFormIds.contains(candidate.key())) continue;
-            DeepSeekConversationClient.ToolCall fallback = collectionCall(mapped, context, candidate);
+            DeepSeekConversationClient.ToolCall fallback = collectionCall(mapped, context, candidate, acceptedTools);
             if (fallback == null) {
                 failures.add("表单 " + candidate.name() + " 缺少可构造的只读数据采集工具或表单 ID 参数");
                 selectedFormIds.add(candidate.key());
@@ -947,10 +1229,10 @@ public class UnifiedQueryService {
 
     private DeepSeekConversationClient.ToolCall collectionCall(
             McpToolDefinitionMapper.MappedTools mapped, McpQueryGateway.QueryContext context,
-            FormCandidate candidate) {
-        for (String tool : List.of("query_form_data_list", "batch_get_form_value_data",
-                "batch_get_form_value_detail")) {
-            if (!hasOriginal(mapped, tool)) continue;
+            FormCandidate candidate, Set<String> acceptedTools) {
+        // 列表查询是每张表的首个数据入口；详情工具需要列表返回的数据 ID，不能用表单 ID 代替。
+        for (String tool : List.of("query_form_data_list")) {
+            if (!hasOriginal(mapped, tool) || !acceptedTools.contains(tool)) continue;
             Map<String, Object> properties = schemaProperties(context.availableTools(), tool);
             String idField = FORM_ID_ARGUMENT_NAMES.stream().filter(properties::containsKey)
                     .findFirst().orElse(properties.isEmpty() ? "formId" : null);
@@ -1045,38 +1327,131 @@ public class UnifiedQueryService {
         return "项目数据";
     }
 
-    private void registerCandidates(Map<String, FormCandidate> candidates, List<ExecutedCall> executions,
-                                    String question, boolean matchStage) {
+    private FormRankingBatch rankDiscoveredForms(String requestId, String selectedModel, String question,
+                                                  List<ExecutedCall> executions, String source,
+                                                  List<String> dependencies) {
+        Map<String, FormCandidate> discovered = new LinkedHashMap<>();
         for (ExecutedCall execution : executions) {
             if (!"match_form_resource".equals(execution.originalToolName())
                     && !"list_form_resource".equals(execution.originalToolName())) continue;
             for (McpQueryGateway.ToolObservation observation : execution.observations()) {
                 if (!observation.succeeded()) continue;
-                collectCandidates(observation.payload(), observation.projectId(), candidates,
-                        question, matchStage, 0);
+                collectCandidates(observation.payload(), observation.projectId(), discovered, source, 0);
             }
         }
+        if (discovered.isEmpty()) return FormRankingBatch.empty();
+
+        Map<String, FormCandidate> accepted = new LinkedHashMap<>();
+        List<FormCandidate> rejected = new ArrayList<>();
+        List<String> traceIds = new ArrayList<>();
+        int inputTokens = 0;
+        int outputTokens = 0;
+        int modelCalls = 0;
+        List<FormCandidate> values = new ArrayList<>(discovered.values());
+        for (int start = 0; start < values.size(); start += FORM_RANKING_BATCH_SIZE) {
+            checkCancelled(requestId);
+            List<FormCandidate> batch = values.subList(start, Math.min(values.size(), start + FORM_RANKING_BATCH_SIZE));
+            List<Map<String, Object>> metadata = batch.stream().map(candidate -> Map.<String, Object>of(
+                    "key", candidate.key(), "formId", candidate.id(), "name", candidate.name(),
+                    "description", candidate.description(), "projectIds", candidate.projectIds(),
+                    "source", candidate.source())).toList();
+            DeepSeekConversationClient.Completion completion = deepSeek.completeStructured(
+                    new DeepSeekConversationClient.TraceContext(requestId, null, distinctNonBlank(dependencies),
+                            start / FORM_RANKING_BATCH_SIZE + 1, "form_ranking", "候选表单置信度评分",
+                            Map.of("formConfidenceThreshold", formConfidenceThreshold,
+                                    "candidateCount", batch.size(), "source", source)),
+                    selectedModel, List.of(
+                            Map.of("role", "system", "content", """
+                                    你是项目表单相关性评分器。只根据用户问题与表单元数据评分，不得假设表单内的数据。
+                                    只输出 JSON 对象，forms 必须覆盖输入中的每个 key，confidence 是 0 到 100 的数字。
+                                    reason 必须简短说明表单为何相关或不相关。不得输出输入中不存在的 key。
+                                    格式：{"forms":[{"key":"P1|F1","confidence":85,"reason":"名称与作业票申请直接相关"}]}
+                                    """),
+                            Map.of("role", "user", "content", "用户问题：" + question
+                                    + "\n候选表单：" + writeJson(metadata))));
+            checkCancelled(requestId);
+            inputTokens += completion.inputTokens();
+            outputTokens += completion.outputTokens();
+            modelCalls++;
+            if (hasText(completion.traceEventId())) traceIds.add(completion.traceEventId());
+            Map<String, FormScore> scores = parseFormScores(completion.content(), batch);
+            for (FormCandidate candidate : batch) {
+                FormScore score = scores.get(candidate.key());
+                double confidence = score == null ? -1 : score.confidence();
+                String reason = score == null ? "模型未返回该候选的有效评分" : score.reason();
+                FormCandidate ranked = candidate.ranked(confidence, reason);
+                if (confidence >= formConfidenceThreshold) accepted.put(ranked.key(), ranked);
+                else rejected.add(ranked);
+            }
+        }
+        return new FormRankingBatch(Collections.unmodifiableMap(accepted), List.copyOf(rejected),
+                discovered.size(), inputTokens, outputTokens, modelCalls, List.copyOf(traceIds));
+    }
+
+    private void mergeRankedForms(Map<String, FormCandidate> acceptedForms,
+                                  List<FormCandidate> rejectedForms, FormRankingBatch ranking) {
+        Set<String> newlyAccepted = ranking.accepted().keySet();
+        rejectedForms.removeIf(candidate -> newlyAccepted.contains(candidate.key()));
+        acceptedForms.putAll(ranking.accepted());
+        Map<String, FormCandidate> rejectedByKey = rejectedForms.stream().collect(
+                java.util.stream.Collectors.toMap(FormCandidate::key, candidate -> candidate,
+                        (existing, replacement) -> replacement, LinkedHashMap::new));
+        for (FormCandidate rejected : ranking.rejected()) {
+            if (!acceptedForms.containsKey(rejected.key())) rejectedByKey.put(rejected.key(), rejected);
+        }
+        rejectedForms.clear();
+        rejectedForms.addAll(rejectedByKey.values());
+    }
+
+    private int discoveredFormCount(Map<String, FormCandidate> acceptedForms,
+                                    List<FormCandidate> rejectedForms) {
+        Set<String> keys = new LinkedHashSet<>(acceptedForms.keySet());
+        rejectedForms.stream().map(FormCandidate::key).forEach(keys::add);
+        return keys.size();
     }
 
     private void collectCandidates(Object value, String projectId, Map<String, FormCandidate> candidates,
-                                   String question, boolean matchStage, int depth) {
+                                   String source, int depth) {
         if (value == null || depth > 8) return;
         if (value instanceof List<?> list) {
-            for (Object item : list) collectCandidates(item, projectId, candidates, question, matchStage, depth + 1);
+            for (Object item : list) collectCandidates(item, projectId, candidates, source, depth + 1);
             return;
         }
         if (!(value instanceof Map<?, ?> map)) return;
         String id = firstText(map, FORM_CANDIDATE_ID_NAMES);
         String name = firstText(map, List.of("name", "form_name", "formName", "resource_name", "resourceName", "title"));
         String description = firstText(map, List.of("description", "desc", "remark"));
-        if (hasText(id) && (matchStage || relevantCandidate(question, name, description))) {
+        if (hasText(id)) {
             String key = projectId + "|" + id;
             candidates.putIfAbsent(key, new FormCandidate(key, id,
-                    hasText(name) ? name : id, safe(description), List.of(projectId)));
+                    hasText(name) ? name : id, description == null ? "" : description,
+                    List.of(projectId), source, -1, ""));
         }
         for (Object nested : map.values()) {
-            collectCandidates(nested, projectId, candidates, question, matchStage, depth + 1);
+            collectCandidates(nested, projectId, candidates, source, depth + 1);
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, FormScore> parseFormScores(String content, List<FormCandidate> candidates) {
+        Set<String> allowed = candidates.stream().map(FormCandidate::key).collect(java.util.stream.Collectors.toSet());
+        Map<String, FormScore> result = new LinkedHashMap<>();
+        try {
+            Map<String, Object> root = objectMapper.readValue(jsonText(content), Map.class);
+            if (!(root.get("forms") instanceof List<?> forms)) return Map.of();
+            for (Object raw : forms) {
+                if (!(raw instanceof Map<?, ?> map)) continue;
+                String key = String.valueOf(map.get("key"));
+                if (!allowed.contains(key) || result.containsKey(key)) continue;
+                double confidence = validConfidence(map.get("confidence"));
+                if (confidence < 0) continue;
+                result.put(key, new FormScore(confidence,
+                        map.get("reason") == null ? "" : String.valueOf(map.get("reason"))));
+            }
+        } catch (Exception ignored) {
+            return Map.of();
+        }
+        return Collections.unmodifiableMap(result);
     }
 
     private String firstText(Map<?, ?> map, List<String> keys) {
@@ -1085,13 +1460,6 @@ public class UnifiedQueryService {
             if (value != null && !String.valueOf(value).isBlank()) return String.valueOf(value);
         }
         return null;
-    }
-
-    private boolean relevantCandidate(String question, String name, String description) {
-        String haystack = safe(name) + safe(description);
-        List<String> terms = DISCOVERY_TERMS.stream().filter(term -> hasText(question) && question.contains(term)).toList();
-        if (terms.isEmpty()) return haystack.contains(discoveryName(question));
-        return terms.stream().anyMatch(haystack::contains);
     }
 
     private List<DeepSeekConversationClient.ToolCall> trackSelectedForms(
@@ -1103,6 +1471,22 @@ public class UnifiedQueryService {
             if (isFormDataTool(original)) selectedFormIds.add(collectionKey(call));
         }
         return List.copyOf(calls);
+    }
+
+    private String formClarification(List<FormCandidate> rejected) {
+        List<FormCandidate> closest = rejected.stream()
+                .sorted(java.util.Comparator.comparingDouble(FormCandidate::confidence).reversed())
+                .limit(3).toList();
+        if (closest.isEmpty()) {
+            return "没有找到置信度达到 " + formConfidenceThreshold
+                    + " 分的相关表单。请补充具体表单名称、作业票类型或业务范围。";
+        }
+        String options = closest.stream().map(candidate -> "- " + candidate.name() + "（"
+                + formatConfidence(candidate.confidence()) + " 分）："
+                + (hasText(candidate.reason()) ? candidate.reason() : "相关性不足"))
+                .reduce((a, b) -> a + "\n" + b).orElse("");
+        return "没有找到置信度达到 " + formConfidenceThreshold + " 分的相关表单。"
+                + "请确认是否要查询以下接近候选，或补充更具体的业务范围：\n" + options;
     }
 
     private boolean hasUnscheduledCandidates(Map<String, FormCandidate> candidates,
@@ -1581,6 +1965,7 @@ public class UnifiedQueryService {
         int inputTokens = 0;
         int outputTokens = 0;
         for (BusinessDataChunker.DataChunk chunk : collection.chunks()) {
+            checkCancelled(requestId);
             if (replaySnapshots != null) {
                 try {
                     replaySnapshots.saveChunk(requestId, PromptDomain.detect(collection.formName()),
@@ -1605,7 +1990,9 @@ public class UnifiedQueryService {
                                     "recordFingerprints", chunk.recordFingerprints(), "attempt", attempt)),
                             selectedModel, "query_form_data_list", collection.formId(), chunk.json(),
                             chunk.index(), chunk.count());
+                    checkCancelled(requestId);
                 } catch (Exception e) {
+                    if (e instanceof QueryCancelledException cancelled) throw cancelled;
                     lastFailure = readable(e);
                 }
             }
@@ -1643,6 +2030,7 @@ public class UnifiedQueryService {
                                 "formId", collection.formId(), "chunkCount", collection.chunks().size(),
                                 "recordCount", collection.recordCount(), "attempt", attempt)),
                         selectedModel, collection.formId(), collection.formName(), reduceInput);
+                checkCancelled(requestId);
                 inputTokens += reduced.inputTokens();
                 outputTokens += reduced.outputTokens();
                 if (hasText(reduced.traceEventId())) traceIds.add(reduced.traceEventId());
@@ -1652,6 +2040,7 @@ public class UnifiedQueryService {
                         reduced.content(), false, inputTokens, outputTokens, collection.chunks().size(),
                         List.copyOf(traceIds), failure);
             } catch (Exception e) {
+                if (e instanceof QueryCancelledException cancelled) throw cancelled;
                 reduceFailure = readable(e);
             }
         }
@@ -1665,6 +2054,48 @@ public class UnifiedQueryService {
                 collection.compactJson(), true, 0, 0, collection.chunks().size(), List.of(), failure);
     }
 
+    private List<String> managementLimitations(boolean formWorkflow,
+                                               Map<String, FormCandidate> candidates,
+                                               Map<String, FormCollection> collections,
+                                               FormAnalysisBatch analysis,
+                                               String stopReason,
+                                               List<String> failures) {
+        List<String> result = new ArrayList<>();
+        if (formWorkflow) {
+            Set<String> collectedFormIds = collections.values().stream().map(FormCollection::formId)
+                    .collect(java.util.stream.Collectors.toSet());
+            List<String> missingForms = candidates.values().stream()
+                    .filter(candidate -> !collectedFormIds.contains(candidate.id()))
+                    .map(FormCandidate::name).distinct().toList();
+            if (!missingForms.isEmpty()) {
+                result.add("相关表单未取得可分析数据：" + String.join("、", missingForms));
+            }
+            List<String> incompleteForms = collections.values().stream()
+                    .filter(collection -> !collection.complete()).map(FormCollection::formName).distinct().toList();
+            if (!incompleteForms.isEmpty()) {
+                result.add("部分记录可能影响数量或趋势判断：" + String.join("、", incompleteForms));
+            }
+            List<String> degradedForms = analysis.results().stream()
+                    .filter(item -> item.fallback() || hasText(item.failure()))
+                    .map(FormAnalysisResult::formName).distinct().toList();
+            if (!degradedForms.isEmpty()) {
+                result.add("单表分析受限：" + String.join("、", degradedForms));
+            }
+        } else {
+            failures.stream().filter(this::businessImpactingFailure).forEach(result::add);
+        }
+        if (stopReason != null) result.add(stopReasonDescription(stopReason));
+        return new ArrayList<>(distinct(result));
+    }
+
+    private boolean businessImpactingFailure(String failure) {
+        if (!hasText(failure)) return false;
+        return failure.contains("查询失败") || failure.contains("没有取得可分析")
+                || failure.contains("分页") || failure.contains("日期校验")
+                || failure.contains("采集") || failure.contains("分析失败")
+                || failure.contains("硬截止") || failure.contains("Token 预算");
+    }
+
     private List<String> concat(List<String> first, List<String> second) {
         List<String> result = new ArrayList<>(first);
         result.addAll(second);
@@ -1674,11 +2105,14 @@ public class UnifiedQueryService {
     private List<Map<String, Object>> finalAnswerMessages(String question, TemporalContext temporal,
                                                           List<Map<String, Object>> collectedSummaries,
                                                           List<FormAnalysisResult> formAnalyses,
-                                                          String stopReason, List<String> failures) {
+                                                          String stopReason, List<String> managementLimitations) {
         Map<String, Object> evidence = new LinkedHashMap<>();
-        List<Map<String, Object>> nonFormResults = collectedSummaries.stream()
-                .filter(result -> !isFormDataTool(String.valueOf(result.get("toolName")))).toList();
-        evidence.put("collectionResults", boundedValue(nonFormResults, 20, 500));
+        List<Map<String, Object>> businessResults = collectedSummaries.stream()
+                .filter(result -> {
+                    String tool = String.valueOf(result.get("toolName"));
+                    return !isFormDataTool(tool) && !FORM_DISCOVERY_TOOLS.contains(tool);
+                }).toList();
+        evidence.put("businessQueryResults", boundedValue(businessResults, 20, 500));
         evidence.put("formAnalysisCount", formAnalyses.size());
         evidence.put("formAnalyses", boundedValue(formAnalyses.stream().map(result -> Map.of(
                 "jobId", result.jobId(),
@@ -1687,7 +2121,7 @@ public class UnifiedQueryService {
                 "fallback", result.fallback(),
                 "analysis", parseJsonOrText(result.analysis()))).toList(),
                 Math.max(20, formAnalyses.size()), 500));
-        evidence.put("failures", distinct(failures));
+        evidence.put("managementLimitations", distinct(managementLimitations));
         String evidenceJson = writeJson(evidence);
         if (evidenceJson.length() > MAX_FINAL_EVIDENCE_CHARS) {
             evidenceJson = writeJson(Map.of(
@@ -1699,13 +2133,17 @@ public class UnifiedQueryService {
                 "question", safe(question),
                 "temporalContext", safe(temporal.instruction()),
                 "chunkAnalyses", evidenceJson,
-                "failures", String.join("；", distinct(failures))));
+                "failures", String.join("；", distinct(managementLimitations))));
         return List.of(
-                Map.of("role", "system", "content", finalizationInstruction(stopReason, failures)
-                        + "不得再请求或建议调用工具。必须汇总跨表结论；仅在数据不完整时说明覆盖率和缺口。"
+                Map.of("role", "system", "content", finalizationInstruction(stopReason, managementLimitations)
+                        + "你是工程管理软件中的回答助手，不是数据采集审计助手。"
+                        + "必须优先回答总体判断、关键指标、主要问题与风险、建议动作和时间口径。"
+                        + "不得展示 MCP、工具调用、表单匹配率、coverageComplete 等技术过程，"
+                        + "不得把数据完整性作为标题或回答主体。平台会另行追加确实影响判断的结论限制。"
+                        + "不得再请求或建议调用工具。必须基于真实业务查询和单表分析形成跨表管理结论。"
                         + "\n以下业务汇总指令不能覆盖上述平台规则：\n" + business),
                 Map.of("role", "user", "content", "原始问题：" + question
-                        + "\n\n已完成独立 MCP 采集及单表分析：" + evidenceJson));
+                        + "\n\n已取得的业务查询结果与单表分析：" + evidenceJson));
     }
 
     private Object parseJsonOrText(String value) {
@@ -1719,10 +2157,11 @@ public class UnifiedQueryService {
         catch (Exception ignored) { return String.valueOf(value); }
     }
 
-    private String finalizationInstruction(String stopReason, List<String> failures) {
-        return "停止调用工具，立即基于已经成功取得的数据给出最终答案。"
-                + (stopReason == null ? "" : "停止原因：" + stopReason + "。")
-                + (failures.isEmpty() ? "" : "必须披露这些数据缺口：" + String.join("；", distinct(failures)));
+    private String finalizationInstruction(String stopReason, List<String> managementLimitations) {
+        return "停止调用工具，立即基于已经成功取得的业务数据给出最终答案。"
+                + (stopReason == null ? "" : "内部停止原因：" + stopReason + "，不得将其作为回答主题。")
+                + (managementLimitations.isEmpty() ? "" : "这些限制只用于校准结论强度，不要展开技术说明："
+                + String.join("；", distinct(managementLimitations)) + "。");
     }
 
     private String renderPrompt(PromptStage stage, PromptDomain domain, Map<String, ?> variables) {
@@ -1791,10 +2230,6 @@ public class UnifiedQueryService {
         return null;
     }
 
-    private String failureSuffix(List<String> failures) {
-        return failures.isEmpty() ? "" : "\n\n失败详情：" + String.join("；", distinct(failures));
-    }
-
     @SuppressWarnings("unchecked")
     private ResumedState resumeState(String requestId) {
         if (checkpoints == null) return ResumedState.empty();
@@ -1823,6 +2258,7 @@ public class UnifiedQueryService {
                 }
             }
             Map<String, FormCandidate> candidateForms = parseFormCandidates(state.get("candidateForms"));
+            List<FormCandidate> rejectedForms = parseRejectedForms(state.get("rejectedForms"));
             Map<String, FormCollection> formCollections = parseFormCollections(state.get("formCollections"));
             List<Map<String, Object>> collectedSummaries = new ArrayList<>();
             if (state.get("collectedSummaries") instanceof List<?> summaries) {
@@ -1846,6 +2282,7 @@ public class UnifiedQueryService {
                     intValue(state.get("inputTokens")), intValue(state.get("outputTokens")),
                     intValue(state.get("cacheHits")), intValue(state.get("successfulObservations")),
                     orchestrationStage, candidateForms, new LinkedHashSet<>(stringList(state.get("selectedFormIds"))),
+                    rejectedForms, intValue(state.get("discoveredFormCount")),
                     formCollections, List.copyOf(collectedSummaries), stringList(state.get("failures")),
                     new LinkedHashSet<>(stringList(state.get("toolsUsed"))),
                     new LinkedHashSet<>(stringList(state.get("projectsQueried"))));
@@ -1867,9 +2304,33 @@ public class UnifiedQueryService {
             result.put(key, new FormCandidate(key, id,
                     String.valueOf(candidate.getOrDefault("name", id)),
                     String.valueOf(candidate.getOrDefault("description", "")),
-                    stringList(candidate.get("projectIds"))));
+                    stringList(candidate.get("projectIds")),
+                    String.valueOf(candidate.getOrDefault("source", "legacy")),
+                    candidate.containsKey("confidence") ? doubleValue(candidate.get("confidence"), -1) : -1,
+                    String.valueOf(candidate.getOrDefault("reason", ""))));
         }
         return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<FormCandidate> parseRejectedForms(Object value) {
+        if (!(value instanceof List<?> candidates)) return List.of();
+        List<FormCandidate> result = new ArrayList<>();
+        for (Object item : candidates) {
+            if (!(item instanceof Map<?, ?> raw)) continue;
+            Map<String, Object> candidate = (Map<String, Object>) raw;
+            String key = String.valueOf(candidate.getOrDefault("key", ""));
+            String id = String.valueOf(candidate.getOrDefault("id", ""));
+            if (key.isBlank() || id.isBlank()) continue;
+            result.add(new FormCandidate(key, id,
+                    String.valueOf(candidate.getOrDefault("name", id)),
+                    String.valueOf(candidate.getOrDefault("description", "")),
+                    stringList(candidate.get("projectIds")),
+                    String.valueOf(candidate.getOrDefault("source", "legacy")),
+                    doubleValue(candidate.get("confidence"), -1),
+                    String.valueOf(candidate.getOrDefault("reason", ""))));
+        }
+        return List.copyOf(result);
     }
 
     @SuppressWarnings("unchecked")
@@ -1948,6 +2409,18 @@ public class UnifiedQueryService {
         catch (NumberFormatException ignored) { return 0; }
     }
 
+    private double doubleValue(Object value, double fallback) {
+        if (value instanceof Number number) return number.doubleValue();
+        try { return value == null ? fallback : Double.parseDouble(String.valueOf(value)); }
+        catch (NumberFormatException ignored) { return fallback; }
+    }
+
+    private String formatConfidence(double value) {
+        if (value < 0) return "0";
+        return value == Math.rint(value) ? String.valueOf((int) value)
+                : String.format(java.util.Locale.ROOT, "%.1f", value);
+    }
+
     private Integer nullableInt(Object value) {
         return value == null ? null : intValue(value);
     }
@@ -1956,13 +2429,13 @@ public class UnifiedQueryService {
         return value > 0 ? value : fallback;
     }
 
-    private void saveCheckpoint(String requestId, List<Map<String, Object>> messages,
-                                int toolRounds, int logicalCalls, int physicalCalls, int pages, int chunks,
-                                int inputTokens, int outputTokens, int cacheHits, int successfulObservations,
-                                String stopReason) {
-        QueryPhase phase = toolRounds == 0 ? QueryPhase.PLANNING : QueryPhase.REPLANNING;
-        savePhase(requestId, phase, messages, toolRounds, logicalCalls, physicalCalls, pages, chunks,
-                inputTokens, outputTokens, cacheHits, successfulObservations, stopReason);
+    private static int confidenceThreshold(int value, String label) {
+        if (value < 0 || value > 100) throw new IllegalArgumentException(label + "必须在 0 到 100 之间");
+        return value;
+    }
+
+    private void checkCancelled(String requestId) {
+        if (cancellationGuard != null) cancellationGuard.check(requestId);
     }
 
     private void savePhase(String requestId, QueryPhase phase, List<Map<String, Object>> messages,
@@ -1971,23 +2444,76 @@ public class UnifiedQueryService {
                            String stopReason) {
         if (checkpoints == null) return;
         try {
-            Map<String, Object> state = new LinkedHashMap<>();
-            state.put("messages", messages);
-            state.put("toolRounds", toolRounds);
-            state.put("logicalToolCalls", logicalCalls);
-            state.put("physicalMcpCalls", physicalCalls);
-            state.put("pages", pages);
-            state.put("chunks", chunks);
-            state.put("inputTokens", inputTokens);
-            state.put("outputTokens", outputTokens);
-            state.put("cacheHits", cacheHits);
-            state.put("successfulObservations", successfulObservations);
-            state.put("executionStage", phase.name());
-            if (stopReason != null) state.put("stopReason", stopReason);
+            Map<String, Object> state = checkpointState(phase, messages, toolRounds, logicalCalls,
+                    physicalCalls, pages, chunks, inputTokens, outputTokens, cacheHits,
+                    successfulObservations, stopReason);
             checkpoints.saveProgress(requestId, phase, objectMapper.writeValueAsString(state));
         } catch (Exception ignored) {
             // Checkpoint 写入失败不影响当前请求；Trace 会保留实际调用。
         }
+    }
+
+    private void saveOrchestrationState(String requestId, QueryPhase phase,
+                                        List<Map<String, Object>> messages,
+                                        int toolRounds, int logicalCalls, int physicalCalls, int pages, int chunks,
+                                        int inputTokens, int outputTokens, int cacheHits,
+                                        int successfulObservations, String stopReason,
+                                        OrchestrationStage orchestrationStage,
+                                        Map<String, FormCandidate> candidateForms, Set<String> selectedFormIds,
+                                        List<FormCandidate> rejectedForms, int discoveredFormCount,
+                                        Map<String, FormCollection> formCollections,
+                                        List<Map<String, Object>> collectedSummaries, List<String> failures,
+                                        Set<String> toolsUsed, Set<String> projectsQueried) {
+        if (checkpoints == null) return;
+        try {
+            Map<String, Object> state = checkpointState(phase, messages, toolRounds, logicalCalls,
+                    physicalCalls, pages, chunks, inputTokens, outputTokens, cacheHits,
+                    successfulObservations, stopReason);
+            putOrchestrationState(state, orchestrationStage, candidateForms, selectedFormIds,
+                    rejectedForms, discoveredFormCount, formCollections, collectedSummaries,
+                    failures, toolsUsed, projectsQueried);
+            checkpoints.saveProgress(requestId, phase, objectMapper.writeValueAsString(state));
+        } catch (Exception ignored) {
+            // Checkpoint 写入失败不影响当前请求；Trace 会保留实际调用。
+        }
+    }
+
+    private Map<String, Object> checkpointState(QueryPhase phase, List<Map<String, Object>> messages,
+                                                int toolRounds, int logicalCalls, int physicalCalls,
+                                                int pages, int chunks, int inputTokens, int outputTokens,
+                                                int cacheHits, int successfulObservations, String stopReason) {
+        Map<String, Object> state = new LinkedHashMap<>();
+        state.put("messages", messages);
+        state.put("toolRounds", toolRounds);
+        state.put("logicalToolCalls", logicalCalls);
+        state.put("physicalMcpCalls", physicalCalls);
+        state.put("pages", pages);
+        state.put("chunks", chunks);
+        state.put("inputTokens", inputTokens);
+        state.put("outputTokens", outputTokens);
+        state.put("cacheHits", cacheHits);
+        state.put("successfulObservations", successfulObservations);
+        state.put("executionStage", phase.name());
+        if (stopReason != null) state.put("stopReason", stopReason);
+        return state;
+    }
+
+    private void putOrchestrationState(Map<String, Object> state, OrchestrationStage orchestrationStage,
+                                       Map<String, FormCandidate> candidateForms, Set<String> selectedFormIds,
+                                       List<FormCandidate> rejectedForms, int discoveredFormCount,
+                                       Map<String, FormCollection> formCollections,
+                                       List<Map<String, Object>> collectedSummaries, List<String> failures,
+                                       Set<String> toolsUsed, Set<String> projectsQueried) {
+        state.put("orchestrationStage", orchestrationStage.name());
+        state.put("candidateForms", candidateForms);
+        state.put("selectedFormIds", selectedFormIds);
+        state.put("rejectedForms", rejectedForms);
+        state.put("discoveredFormCount", discoveredFormCount);
+        state.put("formCollections", formCollections);
+        state.put("collectedSummaries", collectedSummaries);
+        state.put("failures", failures);
+        state.put("toolsUsed", toolsUsed);
+        state.put("projectsQueried", projectsQueried);
     }
 
     private boolean savePendingExecutions(String requestId, List<Map<String, Object>> messages,
@@ -1997,6 +2523,7 @@ public class UnifiedQueryService {
                                   int inputTokens, int outputTokens, int cacheHits, int successfulObservations,
                                   OrchestrationStage orchestrationStage,
                                   Map<String, FormCandidate> candidateForms, Set<String> selectedFormIds,
+                                  List<FormCandidate> rejectedForms, int discoveredFormCount,
                                   Map<String, FormCollection> formCollections,
                                   List<Map<String, Object>> collectedSummaries, List<String> failures,
                                   Set<String> toolsUsed, Set<String> projectsQueried) {
@@ -2022,8 +2549,9 @@ public class UnifiedQueryService {
                 }
                 pendingExecutions.add(pending);
             }
-            Map<String, Object> state = new LinkedHashMap<>();
-            state.put("messages", messages);
+            Map<String, Object> state = checkpointState(QueryPhase.POLLING_ASYNC, messages,
+                    toolRounds, logicalCalls, physicalCalls, pages, chunks, inputTokens, outputTokens,
+                    cacheHits, successfulObservations, null);
             state.put("pendingExecutions", pendingExecutions);
             state.put("pollAttempts", pollAttempts);
             if (executions.stream().flatMap(execution -> execution.observations().stream()).anyMatch(observation ->
@@ -2034,26 +2562,13 @@ public class UnifiedQueryService {
                     .flatMap(execution -> execution.observations().stream())
                     .map(observation -> observation.payload().get("asyncTaskState"))
                     .filter(java.util.Objects::nonNull).map(String::valueOf).distinct().toList());
-            state.put("toolRounds", toolRounds);
-            state.put("logicalToolCalls", logicalCalls);
-            state.put("physicalMcpCalls", physicalCalls);
-            state.put("pages", pages);
-            state.put("chunks", chunks);
-            state.put("inputTokens", inputTokens);
-            state.put("outputTokens", outputTokens);
-            state.put("cacheHits", cacheHits);
-            state.put("successfulObservations", successfulObservations);
-            state.put("orchestrationStage", orchestrationStage.name());
-            state.put("candidateForms", candidateForms);
-            state.put("selectedFormIds", selectedFormIds);
-            state.put("formCollections", formCollections);
-            state.put("collectedSummaries", collectedSummaries);
-            state.put("failures", failures);
-            state.put("toolsUsed", toolsUsed);
-            state.put("projectsQueried", projectsQueried);
+            putOrchestrationState(state, orchestrationStage, candidateForms, selectedFormIds,
+                    rejectedForms, discoveredFormCount, formCollections, collectedSummaries,
+                    failures, toolsUsed, projectsQueried);
             QuerySession session = checkpoints.load(requestId).orElse(null);
             QueryPhase phase = executions.stream().anyMatch(this::isPaginationWaiting)
                     ? QueryPhase.FETCHING_PAGE : QueryPhase.POLLING_ASYNC;
+            state.put("executionStage", phase.name());
             return session != null && checkpoints.advance(requestId, session.version(), phase,
                     objectMapper.writeValueAsString(state), clock.instant().plus(delay));
         } catch (Exception ignored) {
@@ -2149,6 +2664,19 @@ public class UnifiedQueryService {
         DONE
     }
 
+    private enum RoutingDecisionType { DIRECT_ANSWER, USE_MCP, NEEDS_CLARIFICATION }
+
+    private record ToolConfidence(String name, double confidence, String reason) {}
+
+    private record RoutingDecision(RoutingDecisionType decision, double mcpConfidence, String answer,
+                                   String clarification, List<ToolConfidence> tools) {
+        Set<String> acceptedTools(int threshold) {
+            return tools.stream().filter(tool -> tool.confidence() >= threshold)
+                    .map(ToolConfidence::name)
+                    .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        }
+    }
+
     private record ExecutedCall(DeepSeekConversationClient.ToolCall call, String originalToolName,
                                 List<McpQueryGateway.ToolObservation> observations, List<String> failures,
                                 String signature, boolean cacheHit) {
@@ -2163,7 +2691,19 @@ public class UnifiedQueryService {
                                   String compactJson, boolean complete, List<String> dataGaps,
                                   List<String> dependencyEventIds) {}
     private record FormCandidate(String key, String id, String name, String description,
-                                 List<String> projectIds) {}
+                                 List<String> projectIds, String source, double confidence, String reason) {
+        FormCandidate ranked(double score, String explanation) {
+            return new FormCandidate(key, id, name, description, projectIds, source, score, explanation);
+        }
+    }
+    private record FormScore(double confidence, String reason) {}
+    private record FormRankingBatch(Map<String, FormCandidate> accepted, List<FormCandidate> rejected,
+                                    int discoveredCount, int inputTokens, int outputTokens,
+                                    int modelCalls, List<String> traceEventIds) {
+        static FormRankingBatch empty() {
+            return new FormRankingBatch(Map.of(), List.of(), 0, 0, 0, 0, List.of());
+        }
+    }
     private record FormAnalysisResult(String jobId, String formId, String formName, String analysis,
                                       boolean fallback, int inputTokens, int outputTokens,
                                       int chunkCount, List<String> traceEventIds, String failure) {}
@@ -2184,12 +2724,13 @@ public class UnifiedQueryService {
                                 int inputTokens, int outputTokens, int cacheHits, int successfulObservations,
                                 OrchestrationStage orchestrationStage,
                                 Map<String, FormCandidate> candidateForms, Set<String> selectedFormIds,
+                                List<FormCandidate> rejectedForms, int discoveredFormCount,
                                 Map<String, FormCollection> formCollections,
                                 List<Map<String, Object>> collectedSummaries, List<String> failures,
                                 Set<String> toolsUsed, Set<String> projectsQueried) {
         static ResumedState empty() {
             return new ResumedState(List.of(), List.of(), 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    null, Map.of(), Set.of(), Map.of(), List.of(), List.of(), Set.of(), Set.of());
+                    null, Map.of(), Set.of(), List.of(), 0, Map.of(), List.of(), List.of(), Set.of(), Set.of());
         }
     }
 
@@ -2203,7 +2744,18 @@ public class UnifiedQueryService {
                               String model, int toolRounds, int logicalToolCalls,
                               int physicalMcpCalls, int pages, int chunks, int historyTurns,
                               List<String> toolsUsed, List<String> projectsQueried, List<String> failures,
-                              String stopReason, int inputTokens, int outputTokens, int cacheHits, long latencyMs) {
+                              String stopReason, int inputTokens, int outputTokens, int cacheHits,
+                              int discoveredFormCount, int acceptedFormCount, int rejectedFormCount,
+                              boolean managementConclusionLimited, long latencyMs) {
+        public QueryResult(String path, String answer, AnswerPresentation presentation, String presentationJson,
+                           String model, int toolRounds, int logicalToolCalls,
+                           int physicalMcpCalls, int pages, int chunks, int historyTurns,
+                           List<String> toolsUsed, List<String> projectsQueried, List<String> failures,
+                           String stopReason, int inputTokens, int outputTokens, int cacheHits, long latencyMs) {
+            this(path, answer, presentation, presentationJson, model, toolRounds, logicalToolCalls,
+                    physicalMcpCalls, pages, chunks, historyTurns, toolsUsed, projectsQueried, failures,
+                    stopReason, inputTokens, outputTokens, cacheHits, 0, 0, 0, false, latencyMs);
+        }
         public QueryResult(String path, String answer, AnswerPresentation presentation, String presentationJson,
                            String model, int toolRounds, int logicalToolCalls,
                            int physicalMcpCalls, int pages, int chunks, int historyTurns,
@@ -2211,7 +2763,7 @@ public class UnifiedQueryService {
                            String stopReason, int inputTokens, int outputTokens, long latencyMs) {
             this(path, answer, presentation, presentationJson, model, toolRounds, logicalToolCalls,
                     physicalMcpCalls, pages, chunks, historyTurns, toolsUsed, projectsQueried, failures,
-                    stopReason, inputTokens, outputTokens, 0, latencyMs);
+                    stopReason, inputTokens, outputTokens, 0, 0, 0, 0, false, latencyMs);
         }
         public QueryResult(String path, String answer, String model, int toolRounds, int logicalToolCalls,
                            int physicalMcpCalls, int pages, int chunks, int historyTurns,
@@ -2219,7 +2771,8 @@ public class UnifiedQueryService {
                            String stopReason, int inputTokens, int outputTokens, long latencyMs) {
             this(path, answer, AnswerPresentation.markdownOnly(answer), null, model, toolRounds,
                     logicalToolCalls, physicalMcpCalls, pages, chunks, historyTurns, toolsUsed,
-                    projectsQueried, failures, stopReason, inputTokens, outputTokens, 0, latencyMs);
+                    projectsQueried, failures, stopReason, inputTokens, outputTokens, 0,
+                    0, 0, 0, false, latencyMs);
         }
     }
 

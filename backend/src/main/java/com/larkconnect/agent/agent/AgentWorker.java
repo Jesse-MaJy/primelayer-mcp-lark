@@ -30,14 +30,17 @@ public class AgentWorker {
 
     @RabbitListener(queues = RabbitConfig.TASK_QUEUE)
     public void handle(AgentTaskMessage message) {
+        if (taskService.isCancelled(message.requestId())) return;
         if (checkpoints != null) {
             checkpoints.initialize(message.requestId(), taskService.createdAt(message.requestId()));
             if (!checkpoints.claim(message.requestId(), Instant.now(), Duration.ofMinutes(1))) return;
         }
-        taskService.markRunning(message.requestId());
+        if (!taskService.markRunning(message.requestId())) return;
         try {
             AgentOrchestrator.ProcessResult result = orchestrator.process(message.requestId());
-            if (result.pending()) {
+            if (result.cancelled()) {
+                finishCheckpoint(message.requestId(), QueryPhase.CANCELLED, "cancelled");
+            } else if (result.pending()) {
                 if (resumePublisher != null) resumePublisher.schedule(message.requestId(), result.resumeAfter());
             } else if (result.partial()) {
                 taskService.markPartial(message.requestId(), result.error());
@@ -49,6 +52,8 @@ public class AgentWorker {
                 taskService.markFailed(message.requestId(), result.error());
                 finishCheckpoint(message.requestId(), QueryPhase.FAILED, result.error());
             }
+        } catch (QueryCancelledException cancelled) {
+            finishCheckpoint(message.requestId(), QueryPhase.CANCELLED, "cancelled");
         } catch (Exception e) {
             taskService.markFailed(message.requestId(), e.getMessage());
             finishCheckpoint(message.requestId(), QueryPhase.FAILED, e.getMessage());

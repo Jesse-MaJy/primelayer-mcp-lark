@@ -66,14 +66,14 @@ public class QueryCheckpointRepository {
         Instant leaseUntil = now.plus(lease);
         return jdbc.update("""
                 update agent_query_checkpoint set version=version+1, next_run_at=?, heartbeat_at=?, updated_at=?
-                where request_id=? and phase not in ('COMPLETED','PARTIAL','FAILED')
+                where request_id=? and phase not in ('COMPLETED','PARTIAL','FAILED','CANCELLED')
                   and (next_run_at is null or next_run_at <= ?)
                 """, ts(leaseUntil), ts(now), ts(now), requestId, ts(now)) == 1;
     }
 
     public List<QuerySession> findRecoverable(Instant dueAt, Instant staleBefore) {
         return jdbc.query("""
-                select * from agent_query_checkpoint where phase not in ('COMPLETED','PARTIAL','FAILED')
+                select * from agent_query_checkpoint where phase not in ('COMPLETED','PARTIAL','FAILED','CANCELLED')
                   and ((next_run_at is not null and next_run_at <= ?) or heartbeat_at <= ?)
                 """, (rs, row) -> map(rs), ts(dueAt), ts(staleBefore));
     }
@@ -89,14 +89,14 @@ public class QueryCheckpointRepository {
                       q.next_run_at=case when q.phase='POLLING_ASYNC' then q.next_run_at
                         else timestampadd(second, 60, current_timestamp(3)) end,
                       t.heartbeat_at=current_timestamp(3)
-                where t.status='RUNNING' and q.phase not in ('COMPLETED','PARTIAL','FAILED')
+                where t.status='RUNNING' and q.phase not in ('COMPLETED','PARTIAL','FAILED','CANCELLED')
                 """);
     }
 
     public List<QuerySession> findNoticeDue(Instant now) {
         return jdbc.query("""
                 select * from agent_query_checkpoint where notice_at <= ?
-                  and phase not in ('COMPLETED','PARTIAL','FAILED')
+                  and phase not in ('COMPLETED','PARTIAL','FAILED','CANCELLED')
                 """, (rs, row) -> map(rs), ts(now));
     }
 

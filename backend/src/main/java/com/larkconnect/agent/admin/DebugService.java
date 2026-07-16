@@ -114,7 +114,9 @@ public class DebugService {
                 requestId, request.message(), chatType, request.feishuOpenId(), chatId));
         if (Boolean.TRUE.equals(request.sendFeishuMessage()) && hasText(request.feishuChatId())) {
             feishu.sendAnswerCard(request.feishuChatId(), request.message(), result.presentation(),
-                    "mcp_deepseek".equals(result.path()) ? "项目数据分析" : "DeepSeek 回答", "blue");
+                    result.managementConclusionLimited() ? "工程管理分析（受限）"
+                            : "mcp_deepseek".equals(result.path()) ? "工程管理分析" : "DeepSeek 回答",
+                    result.managementConclusionLimited() ? "orange" : "blue");
         }
         Map<String, Object> response = objectMapper.convertValue(result, new TypeReference<LinkedHashMap<String, Object>>() {});
         response.put("requestId", requestId);

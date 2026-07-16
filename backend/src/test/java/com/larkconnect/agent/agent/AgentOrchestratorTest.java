@@ -37,7 +37,7 @@ class AgentOrchestratorTest {
         verify(feishu).replyAnswerFeedbackCard(
                 eq("m1"), eq("r1"), eq("分析 Roche 本月质量风险"),
                 any(AnswerPresentation.class),
-                eq("项目数据分析"), eq("blue"));
+                eq("工程管理分析"), eq("blue"));
         verify(traces).save(eq("r1"), any());
         verify(audit).updateProcessingLatency(eq("r1"), any(Long.class));
         verify(audit).writeModel(eq("r1"), eq("deepseek-v4-pro"), eq("mcp_deepseek"),
@@ -51,7 +51,7 @@ class AgentOrchestratorTest {
                 eq("{\"plainText\":\"风险分析完成\"}"), any(Long.class), eq(null));
         order.verify(feishu).replyAnswerFeedbackCard(
                 eq("m1"), eq("r1"), eq("分析 Roche 本月质量风险"), any(AnswerPresentation.class),
-                eq("项目数据分析"), eq("blue"));
+                eq("工程管理分析"), eq("blue"));
     }
 
     @Test
@@ -105,7 +105,7 @@ class AgentOrchestratorTest {
                 "mcp_deepseek", "已取得数据的部分结果", AnswerPresentation.markdownOnly("部分结果"),
                 null, "deepseek-v4-pro", 1, 1, 1, 1, 0, 0,
                 List.of("query_tasks"), List.of("P1"), List.of("DeepSeek 响应解析失败"),
-                "deepseek_response_error", 20, 10, 0, 100);
+                "deepseek_response_error", 20, 10, 0, 0, 0, 0, true, 100);
         when(unified.query(any())).thenReturn(partial);
 
         AgentOrchestrator.ProcessResult outcome = orchestrator(tasks, unified, feishu, audit, traces)
@@ -114,7 +114,27 @@ class AgentOrchestratorTest {
         assertThat(outcome.succeeded()).isTrue();
         assertThat(outcome.partial()).isTrue();
         verify(feishu).replyAnswerFeedbackCard(eq("m1"), eq("r-partial"), eq("分析项目"),
-                any(AnswerPresentation.class), eq("项目数据分析（部分结果）"), eq("orange"));
+                any(AnswerPresentation.class), eq("工程管理分析（受限）"), eq("orange"));
+    }
+
+    @Test
+    void keepsNormalManagementTitleForNonCriticalInternalWarning() {
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        UnifiedQueryService unified = mock(UnifiedQueryService.class);
+        FeishuClient feishu = mock(FeishuClient.class);
+        AuditService audit = mock(AuditService.class);
+        ChainTraceService traces = mock(ChainTraceService.class);
+        when(tasks.loadTask("r-warning")).thenReturn(task("分析项目质量"));
+        when(unified.query(any())).thenReturn(result(
+                "mcp_deepseek", "质量总体可控", List.of("回答展示 JSON 无效，已降级为 Markdown。"), false));
+
+        AgentOrchestrator.ProcessResult outcome = orchestrator(tasks, unified, feishu, audit, traces)
+                .process("r-warning");
+
+        assertThat(outcome.succeeded()).isTrue();
+        assertThat(outcome.partial()).isFalse();
+        verify(feishu).replyAnswerFeedbackCard(eq("m1"), eq("r-warning"), eq("分析项目质量"),
+                any(AnswerPresentation.class), eq("工程管理分析"), eq("blue"));
     }
 
     @Test
@@ -128,7 +148,7 @@ class AgentOrchestratorTest {
         when(unified.query(any())).thenReturn(result("mcp_deepseek", "风险分析完成"));
         when(feishu.replyAnswerFeedbackCard(
                 eq("m1"), eq("r-send"), eq("分析项目"), any(AnswerPresentation.class),
-                eq("项目数据分析"), eq("blue")))
+                eq("工程管理分析"), eq("blue")))
                 .thenThrow(new IllegalStateException("card table number over limit"));
 
         AgentOrchestrator.ProcessResult outcome = orchestrator(tasks, unified, feishu, audit, traces).process("r-send");
@@ -159,10 +179,16 @@ class AgentOrchestratorTest {
     }
 
     private UnifiedQueryService.QueryResult result(String path, String answer) {
+        return result(path, answer, List.of(), false);
+    }
+
+    private UnifiedQueryService.QueryResult result(String path, String answer, List<String> failures,
+                                                   boolean managementConclusionLimited) {
         AnswerPresentation presentation = new AnswerPresentation(answer,
                 List.of(AnswerPresentation.ContentBlock.markdown("## " + answer)));
         String json = "{\"plainText\":\"" + answer + "\"}";
         return new UnifiedQueryService.QueryResult(path, answer, presentation, json, "deepseek-v4-pro",
-                1, 2, 2, 2, 0, 0, List.of("query_tasks"), List.of("P1"), List.of(), null, 20, 10, 100);
+                1, 2, 2, 2, 0, 0, List.of("query_tasks"), List.of("P1"), failures,
+                null, 20, 10, 0, 0, 0, 0, managementConclusionLimited, 100);
     }
 }

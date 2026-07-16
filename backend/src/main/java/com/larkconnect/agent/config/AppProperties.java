@@ -18,14 +18,16 @@ public record AppProperties(
                         int asyncPollInitialDelayMs, int asyncPollMaxDelayMs,
                         int formAnalysisTimeoutMs, int finalAnswerTimeoutMs,
                         int maxPlanningRounds, int maxLogicalToolCalls,
-                        int maxCandidateForms, int maxStagePlanningCalls) {
+                        int maxStagePlanningCalls,
+                        int toolSelectionConfidenceThreshold,
+                        int formSelectionConfidenceThreshold) {
         @ConstructorBinding
         public Agent {}
 
         public Agent(int maxProjectsPerQuery, int modelTimeoutMs, int mcpTimeoutMs) {
             this(maxProjectsPerQuery, modelTimeoutMs, mcpTimeoutMs,
                     900_000, 1_800_000, 5, 3, 256_000, 1_000, 30_000,
-                    90_000, 60_000, 2, 32, 10, 5);
+                    90_000, 60_000, 2, 32, 5, 70, 80);
         }
     }
     public record Feishu(String appId, String appSecret, String verificationToken, String encryptKey, boolean echoEnabled) {}

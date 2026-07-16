@@ -17,13 +17,10 @@ public class ConversationHistoryService implements ConversationHistoryProvider {
 
     @Override
     public List<HistoryTurn> load(String chatType, String openId, String chatId, String currentRequestId) {
-        boolean group = "group".equals(chatType);
-        String scopeSql = group ? "t.feishu_chat_id = ?" : "t.feishu_open_id = ? and t.feishu_chat_id = ?";
+        String scopeSql = "t.feishu_open_id = ? and t.feishu_chat_id = ?";
         List<Object> args = new ArrayList<>();
-        if (group) args.add(chatId); else {
-            args.add(openId);
-            args.add(chatId);
-        }
+        args.add(openId);
+        args.add(chatId);
         args.add(currentRequestId);
         String sql = """
                 select t.message_text, a.final_answer

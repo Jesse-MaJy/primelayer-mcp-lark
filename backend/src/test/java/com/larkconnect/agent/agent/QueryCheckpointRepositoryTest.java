@@ -52,4 +52,15 @@ class QueryCheckpointRepositoryTest {
         assertThat(repository.claim("r3", created.plusSeconds(1), Duration.ofMinutes(1))).isFalse();
         assertThat(repository.claim("r3", created.plusSeconds(61), Duration.ofMinutes(1))).isTrue();
     }
+
+    @Test
+    void cancelledSessionIsNeverClaimedOrRecovered() {
+        Instant created = Instant.parse("2026-07-14T00:00:00Z");
+        QuerySession session = repository.initialize("r4", created);
+        repository.advance("r4", session.version(), QueryPhase.CANCELLED, "{}", null);
+
+        assertThat(repository.claim("r4", created.plusSeconds(120), Duration.ofMinutes(1))).isFalse();
+        assertThat(repository.findRecoverable(created.plusSeconds(120), created.plusSeconds(120)))
+                .extracting(QuerySession::requestId).doesNotContain("r4");
+    }
 }

@@ -28,8 +28,9 @@ class AppPropertiesBindingTest {
                     "app.agent.final-answer-timeout-ms=60000",
                     "app.agent.max-planning-rounds=2",
                     "app.agent.max-logical-tool-calls=32",
-                    "app.agent.max-candidate-forms=10",
-                    "app.agent.max-stage-planning-calls=5");
+                    "app.agent.max-stage-planning-calls=5",
+                    "app.agent.tool-selection-confidence-threshold=70",
+                    "app.agent.form-selection-confidence-threshold=80");
 
     @Test
     void bindsNestedAgentRecordUsedByHttpClientsAtStartup() {
@@ -41,8 +42,9 @@ class AppPropertiesBindingTest {
             assertThat(properties.agent().queryPageBatchSize()).isEqualTo(5);
             assertThat(properties.agent().formAnalysisTimeoutMs()).isEqualTo(90_000);
             assertThat(properties.agent().maxPlanningRounds()).isEqualTo(2);
-            assertThat(properties.agent().maxCandidateForms()).isEqualTo(10);
             assertThat(properties.agent().maxStagePlanningCalls()).isEqualTo(5);
+            assertThat(properties.agent().toolSelectionConfidenceThreshold()).isEqualTo(70);
+            assertThat(properties.agent().formSelectionConfidenceThreshold()).isEqualTo(80);
         });
     }
 

@@ -87,6 +87,12 @@ public class DeepSeekClient implements DeepSeekConversationClient {
         return requestCompletion(traceContext, selectedModel, messages, List.of(), false, true, finalAnswerClient);
     }
 
+    @Override
+    public Completion completeStructured(TraceContext traceContext, String selectedModel,
+                                         List<Map<String, Object>> messages) {
+        return requestCompletion(traceContext, selectedModel, messages, List.of(), false, true, decisionClient);
+    }
+
     private Completion requestCompletion(TraceContext traceContext, String selectedModel, List<Map<String, Object>> messages,
                                          List<Map<String, Object>> tools, boolean allowTools,
                                          boolean jsonOutput, RestClient client) {
@@ -241,10 +247,11 @@ public class DeepSeekClient implements DeepSeekConversationClient {
                 "formName", formName, "formId", formId, "chunkIndex", 1, "chunkCount", 1,
                 "chunkData", compactJson, "chunkAnalyses", compactJson));
         String prompt = """
-                你是单表数据分析器。只能分析给出的确定性统计、覆盖率和证据样本，不得请求工具或补写事实。
+                你是工程管理单表分析器。只能分析给出的确定性统计和证据样本，不得请求工具或补写事实。
                 表单：%s（%s）。
-                输出紧凑 JSON，字段必须包含 summary、metrics、risks、evidence、dataGaps。
-                若 coverageComplete=false，必须在 dataGaps 中明确说明，禁止形成完整性结论。
+                优先识别管理指标、异常、风险、责任和行动线索。输出紧凑 JSON，字段必须包含
+                summary、metrics、risks、actions、evidence、dataGaps。
+                coverageComplete 只用于校准结论强度；若为 false，在 dataGaps 中简要记录，不得将完整性作为 summary 主体。
                 业务分析指令：%s
                 """.formatted(formName, formId, business);
         Completion completion = requestCompletion(traceContext, selectedModel,

@@ -375,7 +375,7 @@ async function loadTokens() {
     const rows = await adminApi.listProjectTokens()
     tokenOptions.value = rows.map((row) => ({
       value: Number(row.id),
-      label: `${row.project_name || '-'} / ${row.project_id || '-'} / ${row.primelayer_user_id || '-'} / ${row.token_hash_suffix || '-'}`
+      label: `${row.project_name || '-'} / ${row.project_id || '-'} / ${row.feishu_open_id || '-'} / ${row.token_hash_suffix || '-'}`
     }))
     if (!mcp.tokenId && tokenOptions.value.length > 0) {
       mcp.tokenId = tokenOptions.value[0].value
@@ -391,7 +391,7 @@ async function loadPeople() {
     personOptions.value = rows
       .map((row) => ({
         value: String(row.feishu_open_id || ''),
-        label: `${row.person_name || row.primelayer_user_name || row.primelayer_user_id || '-'} / ${row.feishu_open_id || '-'}`
+        label: `${row.person_name || row.feishu_open_id || '-'} / ${row.feishu_open_id || '-'}`
       }))
       .filter((option) => option.value)
   } catch (error) {

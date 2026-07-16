@@ -43,7 +43,7 @@ class AdminRepositoryTraceMetricsTest {
     }
 
     private void createSchema(JdbcTemplate jdbc) {
-        jdbc.execute("create table agent_task(id bigint, request_id varchar, feishu_message_id varchar, feishu_open_id varchar, feishu_chat_id varchar, chat_type varchar, message_text varchar, status varchar, error_message varchar, created_at timestamp, started_at timestamp, finished_at timestamp)");
+        jdbc.execute("create table agent_task(id bigint, request_id varchar, feishu_message_id varchar, feishu_open_id varchar, feishu_chat_id varchar, chat_type varchar, message_text varchar, status varchar, phase varchar, error_message varchar, created_at timestamp, started_at timestamp, finished_at timestamp)");
         jdbc.execute("create table agent_audit_log(request_id varchar, intent varchar, primelayer_user_id varchar, project_ids varchar, final_answer varchar, latency_ms bigint, error_message varchar, trace_status varchar, trace_error_message varchar)");
         jdbc.execute("create table user_binding(feishu_open_id varchar, person_name varchar)");
         jdbc.execute("create table agent_model_call_log(request_id varchar)");

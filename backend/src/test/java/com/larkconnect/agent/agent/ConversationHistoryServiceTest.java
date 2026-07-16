@@ -23,8 +23,9 @@ class ConversationHistoryServiceTest {
     }
 
     @Test
-    void groupHistoryIsSharedAndLimitedToFiveCompletedBusinessTurns() {
-        for (int i = 1; i <= 7; i++) insert("r" + i, "u" + i, "g1", "group", "q" + i, "SUCCEEDED", "a" + i, "mcp_deepseek");
+    void groupHistoryIsIsolatedBySpeakerAndLimitedToFiveCompletedBusinessTurns() {
+        for (int i = 1; i <= 7; i++) insert("r" + i, "u1", "g1", "group", "q" + i, "SUCCEEDED", "a" + i, "mcp_deepseek");
+        insert("other", "u2", "g1", "group", "other", "SUCCEEDED", "other", "mcp_deepseek");
         insert("control", "u1", "g1", "group", "配置正常", "SUCCEEDED", "ok", "mcp_config_status");
         insert("failed", "u1", "g1", "group", "bad", "FAILED", "no", "mcp_deepseek");
         insert("ai-failed", "u1", "g1", "group", "service down", "SUCCEEDED", "unavailable", "ai_unavailable");

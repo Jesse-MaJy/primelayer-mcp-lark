@@ -44,8 +44,9 @@ app:
     final-answer-timeout-ms: 60000
     max-planning-rounds: 2
     max-logical-tool-calls: 32
-    max-candidate-forms: 10
     max-stage-planning-calls: 5
+    tool-selection-confidence-threshold: ${TOOL_SELECTION_CONFIDENCE_THRESHOLD:70}
+    form-selection-confidence-threshold: ${FORM_SELECTION_CONFIDENCE_THRESHOLD:80}
   feishu:
     app-id: ${FEISHU_APP_ID:}
     app-secret: ${FEISHU_APP_SECRET:}

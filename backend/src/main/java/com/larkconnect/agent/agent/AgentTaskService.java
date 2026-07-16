@@ -45,23 +45,29 @@ public class AgentTaskService {
         return value == null ? Instant.now() : value.toInstant();
     }
 
-    public void markRunning(String requestId) {
-        jdbcTemplate.update("update agent_task set status = ?, phase = ?, started_at = coalesce(started_at,current_timestamp), heartbeat_at=current_timestamp where request_id = ?",
-                Status.RUNNING, QueryPhase.PLANNING.name(), requestId);
+    public boolean markRunning(String requestId) {
+        return jdbcTemplate.update("update agent_task set status = ?, phase = ?, started_at = coalesce(started_at,current_timestamp), heartbeat_at=current_timestamp where request_id = ? and status in (?, ?)",
+                Status.RUNNING, QueryPhase.PLANNING.name(), requestId, Status.PENDING, Status.RUNNING) == 1;
     }
 
     public void markSucceeded(String requestId) {
-        jdbcTemplate.update("update agent_task set status = ?, phase = ?, finished_at = current_timestamp where request_id = ?",
-                Status.SUCCEEDED, QueryPhase.COMPLETED.name(), requestId);
+        jdbcTemplate.update("update agent_task set status = ?, phase = ?, finished_at = current_timestamp where request_id = ? and status = ?",
+                Status.SUCCEEDED, QueryPhase.COMPLETED.name(), requestId, Status.RUNNING);
     }
 
     public void markFailed(String requestId, String error) {
-        jdbcTemplate.update("update agent_task set status = ?, phase = ?, error_message = ?, finished_at = current_timestamp where request_id = ?",
-                Status.FAILED, QueryPhase.FAILED.name(), error, requestId);
+        jdbcTemplate.update("update agent_task set status = ?, phase = ?, error_message = ?, finished_at = current_timestamp where request_id = ? and status in (?, ?)",
+                Status.FAILED, QueryPhase.FAILED.name(), error, requestId, Status.PENDING, Status.RUNNING);
     }
 
     public void markPartial(String requestId, String reason) {
-        jdbcTemplate.update("update agent_task set status=?, phase=?, error_message=?, finished_at=current_timestamp where request_id=?",
-                Status.PARTIAL, QueryPhase.PARTIAL.name(), reason, requestId);
+        jdbcTemplate.update("update agent_task set status=?, phase=?, error_message=?, finished_at=current_timestamp where request_id=? and status=?",
+                Status.PARTIAL, QueryPhase.PARTIAL.name(), reason, requestId, Status.RUNNING);
+    }
+
+    public boolean isCancelled(String requestId) {
+        String status = jdbcTemplate.queryForObject(
+                "select status from agent_task where request_id=?", String.class, requestId);
+        return Status.CANCELLED.equals(status);
     }
 }

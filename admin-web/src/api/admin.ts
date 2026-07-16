@@ -5,6 +5,29 @@ export interface LoginResponse {
   expiresInSeconds: number
 }
 
+export interface UserBindingRequest {
+  personName?: string
+  feishuOpenId: string
+  status?: 'ACTIVE' | 'DISABLED' | string
+}
+
+export interface ProjectTokenVerifyRequest {
+  feishuOpenId: string
+  mcpToken: string
+}
+
+export interface ProjectTokenRequest {
+  id?: number | null
+  feishuOpenId: string
+  projectId: string
+  projectName: string
+  projectRemark?: string
+  mcpToken?: string
+  tokenStatus?: 'ACTIVE' | 'DISABLED' | string
+  replaceToken?: boolean
+  manualProjectConfirmed?: boolean
+}
+
 export interface AiSettings {
   deepSeekModel: 'deepseek-v4-pro' | 'deepseek-v4-flash'
   supportedModels: string[]
@@ -68,6 +91,11 @@ export interface AnswerFeedbackDetail {
   updatedAt: string
 }
 
+export interface TerminateTaskResponse {
+  requestId: string
+  status: 'CANCELLED'
+}
+
 export interface FeishuCardPreset {
   key: string
   label: string
@@ -124,18 +152,20 @@ export const adminApi = {
   login: (payload: { username: string; password: string }) =>
     http.post<unknown, LoginResponse>('/api/admin/login', payload),
   listUserBindings: () => http.get<unknown, Record<string, unknown>[]>('/api/admin/user-bindings'),
-  saveUserBinding: (payload: Record<string, unknown>) => http.post('/api/admin/user-bindings', payload),
+  saveUserBinding: (payload: UserBindingRequest) => http.post('/api/admin/user-bindings', payload),
   listProjectTokens: () => http.get<unknown, Record<string, unknown>[]>('/api/admin/project-tokens'),
-  verifyProjectToken: (payload: Record<string, unknown>) =>
+  verifyProjectToken: (payload: ProjectTokenVerifyRequest) =>
     http.post<unknown, Record<string, unknown>>('/api/admin/project-tokens/verify', payload),
-  saveProjectToken: (payload: Record<string, unknown>) => http.post('/api/admin/project-tokens', payload),
-  listChatBindings: () => http.get<unknown, Record<string, unknown>[]>('/api/admin/chat-project-bindings'),
-  saveChatBinding: (payload: Record<string, unknown>) => http.post('/api/admin/chat-project-bindings', payload),
+  saveProjectToken: (payload: ProjectTokenRequest) => http.post('/api/admin/project-tokens', payload),
   listAuditLogs: () => http.get<unknown, Record<string, unknown>[]>('/api/admin/audit-logs'),
   listAgentTasks: () => http.get<unknown, Record<string, unknown>[]>('/api/admin/agent-tasks'),
   listFeishuMessages: () => http.get<unknown, Record<string, unknown>[]>('/api/admin/feishu-messages'),
   listMessageFeedback: (requestId: string) =>
     http.get<unknown, AnswerFeedbackDetail[]>(`/api/admin/feishu-messages/${encodeURIComponent(requestId)}/feedback`),
+  terminateFeishuMessage: (requestId: string) =>
+    http.post<unknown, TerminateTaskResponse>(
+      `/api/admin/feishu-messages/${encodeURIComponent(requestId)}/terminate`
+    ),
   getAiSettings: () => http.get<unknown, AiSettings>('/api/admin/ai-settings'),
   saveAiSettings: (payload: Record<string, unknown>) => http.put<unknown, AiSettings>('/api/admin/ai-settings', payload),
   getPromptTemplates: () => http.get<unknown, PromptGovernanceData>('/api/admin/prompt-templates'),

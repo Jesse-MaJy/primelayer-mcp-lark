@@ -95,6 +95,16 @@
             </a-button>
           </a-space>
         </template>
+        <template v-else-if="column.key === 'actions'">
+          <a-button
+            v-if="isTerminable(record.status)"
+            danger
+            size="small"
+            :loading="isTerminating(record.request_id)"
+            @click.stop="confirmTerminate(record)"
+          >终止</a-button>
+          <span v-else class="muted">-</span>
+        </template>
       </template>
 
       <template #expandedRowRender="{ record }">
@@ -196,13 +206,14 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { message } from 'ant-design-vue'
+import { message, Modal } from 'ant-design-vue'
 import { adminApi, type AnswerFeedbackDetail } from '../api/admin'
 import { formatChinaDateTime } from '../utils/time'
 import TracePanel from '../components/TracePanel.vue'
 
 const rows = ref<Record<string, unknown>[]>([])
 const loading = ref(false)
+const terminatingRequestIds = ref<string[]>([])
 
 const columns = ref([
   { title: '时间', dataIndex: 'created_at', width: 170, resizable: true, minWidth: 80, maxWidth: 400, customRender: ({ text }: { text: unknown }) => formatChinaDateTime(text) },
@@ -215,7 +226,8 @@ const columns = ref([
   { title: 'Token / 数据', key: 'usage', width: 130, resizable: true, minWidth: 100, maxWidth: 260 },
   { title: '反馈', key: 'feedback', width: 210, resizable: true, minWidth: 150, maxWidth: 400 },
   { title: '耗时', key: 'latency', width: 135, resizable: true, minWidth: 100, maxWidth: 260 },
-  { title: '回答', dataIndex: 'final_answer', key: 'final_answer', width: 300, resizable: true, minWidth: 80, maxWidth: 1000 }
+  { title: '回答', dataIndex: 'final_answer', key: 'final_answer', width: 300, resizable: true, minWidth: 80, maxWidth: 1000 },
+  { title: '操作', key: 'actions', width: 90, resizable: false, minWidth: 90, maxWidth: 90 }
 ])
 
 // Chain trace drawer
@@ -265,6 +277,39 @@ async function openFeedback(record: Record<string, unknown>) {
   }
 }
 
+function isTerminable(status: unknown): boolean {
+  return status === 'PENDING' || status === 'RUNNING'
+}
+
+function isTerminating(requestId: unknown): boolean {
+  return terminatingRequestIds.value.includes(String(requestId || ''))
+}
+
+function confirmTerminate(record: Record<string, unknown>) {
+  const requestId = String(record.request_id || '')
+  if (!requestId || isTerminating(requestId)) return
+  Modal.confirm({
+    title: '确认终止该任务？',
+    content: '终止后不会再发送本任务的最终答案，并会通知原飞书会话。',
+    okText: '终止任务',
+    cancelText: '取消',
+    okType: 'danger',
+    async onOk() {
+      terminatingRequestIds.value = [...terminatingRequestIds.value, requestId]
+      try {
+        await adminApi.terminateFeishuMessage(requestId)
+        message.success('任务已终止')
+        await loadRows()
+      } catch (error) {
+        message.error(error instanceof Error ? error.message : '终止任务失败')
+        throw error
+      } finally {
+        terminatingRequestIds.value = terminatingRequestIds.value.filter(id => id !== requestId)
+      }
+    }
+  })
+}
+
 function formatMs(value: unknown): string {
   const ms = Number(value || 0)
   if (!ms) return '-'
@@ -279,6 +324,7 @@ function statusColor(status: unknown) {
   if (status === 'SUCCEEDED') return 'green'
   if (status === 'FAILED') return 'red'
   if (status === 'RUNNING') return 'blue'
+  if (status === 'CANCELLED') return 'default'
   return 'default'
 }
 
@@ -299,6 +345,7 @@ function diagnosticText(record: Record<string, unknown>) {
     `processing_latency: ${formatMs(record.processing_latency_ms ?? record.latency_ms)}`,
     `queue_latency: ${formatMs(record.queue_latency_ms)}`,
     `trace_completeness: ${record.trace_completeness || '-'}`,
+    `phase: ${record.phase || '-'}`,
     `failed_tool_calls: ${record.failed_tool_call_count ?? 0}`,
     `tool_names: ${record.tool_names || '-'}`,
     `started_at: ${formatChinaDateTime(record.started_at)}`,

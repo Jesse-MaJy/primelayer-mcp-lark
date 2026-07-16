@@ -50,6 +50,7 @@ function statusColor(status: string) {
     case 'SUCCEEDED': return 'green'
     case 'FAILED': return 'red'
     case 'RUNNING': return 'blue'
+    case 'CANCELLED': return 'default'
     default: return 'default'
   }
 }

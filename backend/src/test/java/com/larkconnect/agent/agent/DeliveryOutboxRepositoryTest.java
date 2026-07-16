@@ -16,7 +16,10 @@ class DeliveryOutboxRepositoryTest {
     void setup() {
         JdbcTemplate jdbc = new JdbcTemplate(new DriverManagerDataSource("jdbc:h2:mem:outbox;MODE=MySQL;DB_CLOSE_DELAY=-1", "sa", ""));
         jdbc.execute("drop table if exists agent_delivery_outbox");
+        jdbc.execute("drop table if exists agent_task");
+        jdbc.execute("create table agent_task(request_id varchar(128) primary key, status varchar(32))");
         jdbc.execute("create table agent_delivery_outbox(id bigint auto_increment primary key, request_id varchar(128), delivery_type varchar(32), payload_json clob, status varchar(32), attempts int, next_attempt_at timestamp, lease_until timestamp, sent_at timestamp, feishu_message_id varchar(128), last_error clob, unique(request_id, delivery_type))");
+        jdbc.update("insert into agent_task values (?,?)", "r1", "RUNNING");
         repository = new DeliveryOutboxRepository(jdbc);
     }
 

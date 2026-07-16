@@ -5,6 +5,7 @@ import com.larkconnect.agent.deepseek.DeepSeekConversationClient;
 import com.larkconnect.agent.mcp.McpQueryGateway;
 import com.larkconnect.agent.mcp.McpToolDefinitionMapper;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -25,7 +26,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
 
 class UnifiedQueryServiceTest {
     private static final ZoneId SHANGHAI = ZoneId.of("Asia/Shanghai");
@@ -45,10 +48,93 @@ class UnifiedQueryServiceTest {
         assertThat(deepSeek.presentationCalls).isEqualTo(1);
         assertThat(result.toolRounds()).isZero();
         assertThat(gateway.executions.get()).isZero();
-        assertThat(deepSeek.receivedMessages.get(0).get(0).get("content").toString())
+        assertThat(deepSeek.structuredMessages.get(0).get(0).get("content").toString())
                 .contains("当前会话类型：私聊")
                 .contains("不得重复请求相同工具、项目和参数")
                 .contains("仅当分页、日期校验或分块分析不完整时披露覆盖率和缺口");
+    }
+
+    @Test
+    void rejectsToolBelowConfidenceThresholdWithoutExecutingMcp() {
+        FakeDeepSeek deepSeek = new FakeDeepSeek(completion("不应消费", List.of()));
+        deepSeek.toolConfidence = 69;
+        FakeGateway gateway = new FakeGateway(context());
+
+        UnifiedQueryService.QueryResult result = service(deepSeek, gateway).query(
+                new UnifiedQueryService.QueryRequest("r-low-tool", "查询项目任务", "p2p", "u1", "c1"));
+
+        assertThat(result.path()).isEqualTo("mcp_clarification");
+        assertThat(gateway.executions).hasValue(0);
+        assertThat(result.answer()).contains("没有足够高置信度的 MCP 工具");
+    }
+
+    @Test
+    void rejectsFormBelowThresholdAndAcceptsBoundaryScore() {
+        FakeDeepSeek rejectedModel = new FakeDeepSeek(completion(null, List.of()));
+        rejectedModel.formConfidence = 79;
+        FakeGateway rejectedGateway = new FakeGateway(formContext());
+        rejectedGateway.structuredRecords = true;
+
+        UnifiedQueryService.QueryResult rejected = service(rejectedModel, rejectedGateway).query(
+                new UnifiedQueryService.QueryRequest("r-low-form", "项目安全情况", "p2p", "u1", "c1"));
+
+        assertThat(rejected.path()).isEqualTo("mcp_clarification");
+        assertThat(rejectedGateway.executedTools).contains("match_form_resource")
+                .doesNotContain("query_form_data_list");
+        assertThat(rejected.rejectedFormCount()).isEqualTo(3);
+
+        FakeDeepSeek acceptedModel = new FakeDeepSeek(completion(null, List.of()), completion("完成", List.of()));
+        acceptedModel.formConfidence = 80;
+        FakeGateway acceptedGateway = new FakeGateway(formContext());
+        acceptedGateway.structuredRecords = true;
+
+        UnifiedQueryService.QueryResult accepted = service(acceptedModel, acceptedGateway).query(
+                new UnifiedQueryService.QueryRequest("r-boundary-form", "项目安全情况", "p2p", "u1", "c1"));
+
+        assertThat(acceptedGateway.executedTools).contains("query_form_data_list");
+        assertThat(accepted.acceptedFormCount()).isEqualTo(3);
+    }
+
+    @Test
+    void persistsRoutingDecisionAndRejectedFormScoresInCheckpoint() {
+        ObjectMapper mapper = new ObjectMapper();
+        QueryCheckpointRepository checkpoints = mock(QueryCheckpointRepository.class);
+        when(checkpoints.load("r-ranked-checkpoint")).thenReturn(Optional.empty());
+        FakeDeepSeek deepSeek = new FakeDeepSeek(completion(null, List.of()));
+        deepSeek.formConfidence = 79;
+        FakeGateway gateway = new FakeGateway(formContext());
+        gateway.structuredRecords = true;
+        ConversationHistoryProvider history = (chatType, openId, chatId, requestId) -> List.of();
+        UnifiedQueryService service = new UnifiedQueryService(deepSeek, gateway, new McpToolDefinitionMapper(),
+                history, mapper, new AnswerPresentationParser(mapper),
+                Clock.fixed(Instant.parse("2026-07-13T00:00:00Z"), SHANGHAI), checkpoints);
+
+        service.query(new UnifiedQueryService.QueryRequest(
+                "r-ranked-checkpoint", "项目安全情况", "p2p", "u1", "c1"));
+
+        ArgumentCaptor<String> states = ArgumentCaptor.forClass(String.class);
+        verify(checkpoints, atLeastOnce()).saveProgress(
+                org.mockito.ArgumentMatchers.eq("r-ranked-checkpoint"),
+                org.mockito.ArgumentMatchers.any(QueryPhase.class), states.capture());
+        assertThat(states.getAllValues()).anyMatch(state -> state.contains("LARK_CONNECT_ROUTING_DECISION:"));
+        assertThat(states.getAllValues()).anyMatch(state -> state.contains("\"rejectedForms\"")
+                && state.contains("\"confidence\":79.0")
+                && state.contains("\"discoveredFormCount\":3"));
+    }
+
+    @Test
+    void rejectsModelToolCallOutsideRoutedStageWhitelist() {
+        FakeDeepSeek deepSeek = new FakeDeepSeek(
+                completion(null, List.of(formTool("wrong-stage", "mcp_query_form_data_list", "F1"))));
+        FakeGateway gateway = new FakeGateway(formContext());
+
+        UnifiedQueryService.QueryResult result = service(deepSeek, gateway).query(
+                new UnifiedQueryService.QueryRequest("r-stage-whitelist", "项目安全情况", "p2p", "u1", "c1"));
+
+        assertThat(gateway.executedTools).contains("match_form_resource")
+                .doesNotContain("query_form_data_list");
+        assertThat(result.failures()).anyMatch(failure -> failure.contains("阶段白名单")
+                && failure.contains("query_form_data_list"));
     }
 
     @Test
@@ -439,7 +525,9 @@ class UnifiedQueryServiceTest {
         UnifiedQueryService.QueryResult result = service(deepSeek, gateway).query(
                 new UnifiedQueryService.QueryRequest("r4", "跨项目分析", "p2p", "u1", "c1"));
 
-        assertThat(result.answer()).contains("成功项目结论").contains("数据缺口").contains("P2 查询失败");
+        assertThat(result.answer()).contains("成功项目结论").contains("结论限制").contains("P2 查询失败")
+                .doesNotContain("数据缺口");
+        assertThat(result.managementConclusionLimited()).isTrue();
         assertThat(result.failures()).contains("P2 查询失败");
     }
 
@@ -502,6 +590,53 @@ class UnifiedQueryServiceTest {
         assertThat(result.chunks()).isEqualTo(deepSeek.analyzedChunks.size());
         assertThat(deepSeek.allowTools).containsExactly(true, false);
         assertThat(result.answer()).isEqualTo("三张表汇总完成");
+    }
+
+    @Test
+    void completesFormPipelineWhenRouterOnlySelectsDiscoveryTools() {
+        FakeDeepSeek deepSeek = new FakeDeepSeek(
+                completion(null, List.of()),
+                completion(null, List.of()),
+                completion("## 总体判断\n质量风险可控。\n\n## 建议动作\n持续跟踪未闭环事项。", List.of()));
+        deepSeek.routedToolNames = List.of("get_base_form_info", "match_form_resource");
+        FakeGateway gateway = new FakeGateway(formContextWithBaseInfo(true));
+        gateway.structuredRecords = true;
+        gateway.discoveryFormCount = 4;
+
+        UnifiedQueryService.QueryResult result = service(deepSeek, gateway).query(
+                new UnifiedQueryService.QueryRequest("r-production-regression",
+                        "Roche 这个月质量情况", "p2p", "u1", "c1"));
+
+        assertThat(gateway.executedTools).startsWith("get_base_form_info", "match_form_resource");
+        assertThat(gateway.executedTools.stream().filter("query_form_data_list"::equals).count()).isEqualTo(4);
+        assertThat(deepSeek.analyzedForms).containsExactlyInAnyOrder("FORM-1", "FORM-2", "FORM-3", "FORM-4");
+        assertThat(result.managementConclusionLimited()).isFalse();
+        String finalMessages = deepSeek.receivedMessages.get(deepSeek.receivedMessages.size() - 1).toString();
+        assertThat(finalMessages).contains("\"formAnalysisCount\":4")
+                .contains("\"businessQueryResults\":[]")
+                .doesNotContain("\"toolName\":\"get_base_form_info\"")
+                .doesNotContain("\"toolName\":\"match_form_resource\"")
+                .contains("总体判断").contains("建议动作").contains("时间口径");
+    }
+
+    @Test
+    void refusesManagementAnalysisWhenFormListDataToolIsUnavailable() {
+        FakeDeepSeek deepSeek = new FakeDeepSeek(completion(null, List.of()), completion(null, List.of()));
+        deepSeek.routedToolNames = List.of("get_base_form_info", "match_form_resource");
+        FakeGateway gateway = new FakeGateway(formContextWithBaseInfo(false));
+        gateway.structuredRecords = true;
+        gateway.discoveryFormCount = 4;
+
+        UnifiedQueryService.QueryResult result = service(deepSeek, gateway).query(
+                new UnifiedQueryService.QueryRequest("r-no-form-data-tool",
+                        "Roche 这个月质量情况", "p2p", "u1", "c1"));
+
+        assertThat(gateway.executedTools).containsExactly("get_base_form_info", "match_form_resource");
+        assertThat(deepSeek.analyzedForms).isEmpty();
+        assertThat(deepSeek.receivedMessages).hasSize(2);
+        assertThat(result.answer()).contains("无法获取相关表单的业务数据")
+                .doesNotContain("覆盖完整").doesNotContain("匹配率");
+        assertThat(result.managementConclusionLimited()).isTrue();
     }
 
     @Test
@@ -574,7 +709,8 @@ class UnifiedQueryServiceTest {
         assertThat(deepSeek.analyzedForms).hasSize(11).doesNotContain("FORM-5");
         assertThat(result.failures()).anyMatch(failure -> failure.contains("FORM-5")
                 && failure.contains("没有取得可分析的成功数据"));
-        assertThat(result.answer()).contains("部分分析").contains("数据缺口");
+        assertThat(result.answer()).contains("部分分析").contains("结论限制").doesNotContain("数据缺口");
+        assertThat(result.managementConclusionLimited()).isTrue();
     }
 
     @Test
@@ -642,6 +778,22 @@ class UnifiedQueryServiceTest {
     }
 
     @Test
+    void deduplicatesRejectedCandidatesAcrossMatchAndListFallback() {
+        FakeDeepSeek deepSeek = new FakeDeepSeek(
+                completion(null, List.of()), completion(null, List.of()));
+        deepSeek.formConfidence = 79;
+        FakeGateway gateway = new FakeGateway(formContextWithList());
+        gateway.structuredRecords = true;
+
+        UnifiedQueryService.QueryResult result = service(deepSeek, gateway).query(
+                new UnifiedQueryService.QueryRequest("r-rejected-dedup", "项目安全情况", "p2p", "u1", "c1"));
+
+        assertThat(gateway.executedTools).containsExactly("match_form_resource", "list_form_resource");
+        assertThat(result.discoveredFormCount()).isEqualTo(3);
+        assertThat(result.rejectedFormCount()).isEqualTo(3);
+    }
+
+    @Test
     void fallsBackToDeterministicStatisticsWhenOneFormAnalysisFails() {
         FakeDeepSeek deepSeek = new FakeDeepSeek(
                 completion(null, List.of(formTool("discover", "mcp_match_form_resource", "quality"))),
@@ -657,7 +809,9 @@ class UnifiedQueryServiceTest {
         assertThat(deepSeek.analyzedForms.stream().filter("FORM-1"::equals).count()).isEqualTo(2);
         assertThat(result.failures()).anyMatch(failure -> failure.contains("DeepSeek 分析失败"));
         assertThat(deepSeek.receivedMessages.get(1).toString()).contains("\"fallback\":true");
-        assertThat(result.answer()).contains("基于降级统计完成").contains("数据缺口");
+        assertThat(result.answer()).contains("基于降级统计完成").contains("结论限制")
+                .doesNotContain("数据缺口");
+        assertThat(result.managementConclusionLimited()).isTrue();
     }
 
     @Test
@@ -705,7 +859,9 @@ class UnifiedQueryServiceTest {
         UnifiedQueryService.QueryResult result = service(deepSeek, gateway).query(
                 new UnifiedQueryService.QueryRequest("r7", "分页上限", "p2p", "u1", "c1"));
 
-        assertThat(result.answer()).contains("查询硬截止时间").contains("数据缺口");
+        assertThat(result.answer()).contains("查询硬截止时间").contains("结论限制")
+                .doesNotContain("数据缺口");
+        assertThat(result.managementConclusionLimited()).isTrue();
         assertThat(result.failures()).anyMatch(failure -> failure.contains("查询硬截止时间"));
     }
 
@@ -760,7 +916,8 @@ class UnifiedQueryServiceTest {
         assertThat(result.path()).isEqualTo("mcp_deepseek");
         assertThat(result.logicalToolCalls()).isEqualTo(1);
         assertThat(result.physicalMcpCalls()).isEqualTo(1);
-        assertThat(result.answer()).contains("查询部分结果").contains("以上结论仅基于已成功取得的数据");
+        assertThat(result.answer()).contains("查询部分结果").doesNotContain("以上结论仅基于已成功取得的数据");
+        assertThat(result.managementConclusionLimited()).isTrue();
         assertThat(result.failures()).anyMatch(failure -> failure.contains("DeepSeek"));
         assertThat(deepSeek.presentationCalls).isZero();
     }
@@ -923,13 +1080,14 @@ class UnifiedQueryServiceTest {
                 new UnifiedQueryService.QueryRequest("trace-request", "分析项目", "p2p", "u1", "c1"));
 
         assertThat(gateway.loadedRequestId).isEqualTo("trace-request");
-        assertThat(deepSeek.traceContexts).hasSize(2);
+        assertThat(deepSeek.traceContexts).hasSize(3);
         assertThat(deepSeek.traceContexts.get(0).dependencyEventIds()).containsExactly("discovery-1");
-        assertThat(gateway.executionTrace.parentEventId()).isEqualTo("model-1");
+        assertThat(gateway.executionTrace.parentEventId()).isEqualTo("model-2");
         assertThat(gateway.executionTrace.logicalCallId()).isEqualTo("logical-1");
-        assertThat(deepSeek.traceContexts.get(1).dependencyEventIds()).containsExactly("tool-event-1");
-        assertThat(deepSeek.traceContexts.get(0).purpose()).isEqualTo("planning");
-        assertThat(deepSeek.traceContexts.get(1).purpose()).isEqualTo("replanning");
+        assertThat(deepSeek.traceContexts.get(2).dependencyEventIds()).containsExactly("tool-event-1");
+        assertThat(deepSeek.traceContexts.get(0).purpose()).isEqualTo("tool_routing");
+        assertThat(deepSeek.traceContexts.get(1).purpose()).isEqualTo("planning");
+        assertThat(deepSeek.traceContexts.get(2).purpose()).isEqualTo("replanning");
         assertThat(deepSeek.presentationCalls).isZero();
     }
 
@@ -996,6 +1154,15 @@ class UnifiedQueryServiceTest {
         return new McpQueryGateway.QueryContext("pl1", formContext().projects(), tools, null);
     }
 
+    private static McpQueryGateway.QueryContext formContextWithBaseInfo(boolean includeDataTool) {
+        List<Map<String, Object>> tools = new ArrayList<>();
+        tools.add(Map.of("name", "get_base_form_info", "description", "base forms",
+                "inputSchema", Map.of("type", "object")));
+        tools.addAll(formContext().availableTools());
+        if (!includeDataTool) tools.removeIf(tool -> "query_form_data_list".equals(tool.get("name")));
+        return new McpQueryGateway.QueryContext("pl1", formContext().projects(), tools, null);
+    }
+
     private static McpQueryGateway.QueryContext contextWithAsyncTool() {
         return new McpQueryGateway.QueryContext("pl1", List.of(new McpQueryGateway.Project("P1", "项目一")),
                 List.of(Map.of("name", "get_async_task_result", "description", "async",
@@ -1034,12 +1201,17 @@ class UnifiedQueryServiceTest {
         private final AtomicInteger formAnalysisAttempts = new AtomicInteger();
         private String failedFormId;
         private final List<List<Map<String, Object>>> receivedMessages = new ArrayList<>();
+        private final List<List<Map<String, Object>>> structuredMessages = new ArrayList<>();
         private final List<List<Map<String, Object>>> presentationMessages = new ArrayList<>();
         private final List<String> selectedModels = new ArrayList<>();
         private int failedChunk = -1;
         private int modelReads;
         private int presentationCalls;
         private int tracedCalls;
+        private int routeMcpConfidence = 90;
+        private int toolConfidence = 90;
+        private int formConfidence = 90;
+        private List<String> routedToolNames;
         private final List<TraceContext> traceContexts = new ArrayList<>();
 
         FakeDeepSeek(Completion... values) { completions.addAll(List.of(values)); }
@@ -1090,6 +1262,42 @@ class UnifiedQueryServiceTest {
             tracedCalls++;
             return new Completion(value.content(), value.toolCalls(), value.assistantMessage(),
                     value.inputTokens(), value.outputTokens(), "model-" + tracedCalls, 1, Map.of());
+        }
+
+        @Override
+        public Completion completeStructured(TraceContext traceContext, String selectedModel,
+                                             List<Map<String, Object>> messages) {
+            selectedModels.add(selectedModel);
+            traceContexts.add(traceContext);
+            structuredMessages.add(List.copyOf(messages));
+            String joined = messages.toString();
+            String content;
+            if (joined.contains("项目表单相关性评分器")) {
+                java.util.regex.Matcher matcher = java.util.regex.Pattern
+                        .compile("\\\"key\\\":\\\"([^\\\"]+)\\\"").matcher(joined);
+                List<String> keys = new ArrayList<>();
+                while (matcher.find()) if (!keys.contains(matcher.group(1))) keys.add(matcher.group(1));
+                content = "{\"forms\":[" + keys.stream().map(key -> "{\"key\":\"" + key
+                        + "\",\"confidence\":" + formConfidence + ",\"reason\":\"test relevant\"}")
+                        .reduce((a, b) -> a + "," + b).orElse("") + "]}";
+            } else if (joined.contains("介绍一下你自己")) {
+                content = "{\"decision\":\"DIRECT_ANSWER\",\"mcpConfidence\":0,"
+                        + "\"answer\":\"你好\",\"clarification\":\"\",\"tools\":[]}";
+            } else {
+                java.util.regex.Matcher matcher = java.util.regex.Pattern
+                        .compile("\\\"name\\\":\\\"([^\\\"]+)\\\"").matcher(joined);
+                List<String> names = new ArrayList<>();
+                while (matcher.find()) if (!names.contains(matcher.group(1))) names.add(matcher.group(1));
+                if (routedToolNames != null) names = routedToolNames;
+                content = "{\"decision\":\"USE_MCP\",\"mcpConfidence\":" + routeMcpConfidence + ","
+                        + "\"answer\":\"\",\"clarification\":\"\",\"tools\":["
+                        + names.stream().map(name -> "{\"name\":\"" + name
+                        + "\",\"confidence\":" + toolConfidence + ",\"reason\":\"test relevant\"}")
+                        .reduce((a, b) -> a + "," + b).orElse("") + "]}";
+            }
+            tracedCalls++;
+            return new Completion(content, List.of(), Map.of("role", "assistant", "content", content),
+                    3, 2, "model-" + tracedCalls, 1, Map.of());
         }
 
         @Override

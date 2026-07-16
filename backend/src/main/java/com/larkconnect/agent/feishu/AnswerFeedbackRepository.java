@@ -32,7 +32,7 @@ public class AnswerFeedbackRepository {
                       and a.final_answer is not null
                     """, (rs, rowNum) -> {
                 String intent = rs.getString("intent");
-                String title = "mcp_deepseek".equals(intent) ? "项目数据分析" : "DeepSeek 回答";
+                String title = "mcp_deepseek".equals(intent) ? "工程管理分析" : "DeepSeek 回答";
                 return new AnswerContext(
                         rs.getString("request_id"),
                         rs.getString("feishu_message_id"),
