@@ -33,9 +33,20 @@ app:
     max-projects-per-query: 20
     model-timeout-ms: 30000
     mcp-timeout-ms: 30000
-  agent-service:
-    enabled: ${AGENT_SERVICE_ENABLED:true}
-    base-url: ${AGENT_SERVICE_BASE_URL:http://localhost:8090}
+    query-progress-notice-ms: 900000
+    query-hard-timeout-ms: 1800000
+    query-page-batch-size: 5
+    max-no-progress-decisions: 3
+    model-input-token-budget: 256000
+    async-poll-initial-delay-ms: 1000
+    async-poll-max-delay-ms: 30000
+    form-analysis-timeout-ms: 90000
+    final-answer-timeout-ms: 60000
+    max-planning-rounds: 2
+    max-logical-tool-calls: 32
+    max-stage-planning-calls: 5
+    tool-selection-confidence-threshold: ${TOOL_SELECTION_CONFIDENCE_THRESHOLD:70}
+    form-selection-confidence-threshold: ${FORM_SELECTION_CONFIDENCE_THRESHOLD:80}
   feishu:
     app-id: ${FEISHU_APP_ID:}
     app-secret: ${FEISHU_APP_SECRET:}
@@ -45,7 +56,6 @@ app:
   deepseek:
     base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
     api-key: ${DEEPSEEK_API_KEY:}
-    model: ${DEEPSEEK_MODEL:deepseek-chat}
   mcp:
     endpoint: ${PRIMELAYER_MCP_ENDPOINT:http://localhost:9000/mcp}
     auth-header-name: ${PRIMELAYER_MCP_AUTH_HEADER:X-API-Key}

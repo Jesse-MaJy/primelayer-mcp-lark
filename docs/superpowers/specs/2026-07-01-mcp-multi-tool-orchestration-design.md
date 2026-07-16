@@ -305,3 +305,4 @@ MCP 工具返回结构（约定）：
 - [ ] DeepSeek API key 不可用时降级为启发式多工具规划
 - [ ] 链调 JSON 大小限制（单节点 response 超过 10KB 截断存储）
 - [ ] 与现有 `processWithAgentService()` 路径不冲突，仅在 DeepSeek 路径生效
+> **历史方案（2026-07-13 标记）**：旧 JSON Planner 已由 DeepSeek 原生 Tool Calling 多轮会话取代。

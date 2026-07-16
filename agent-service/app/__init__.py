@@ -1,1 +1,0 @@
-"""Lark Connect Agent Service."""

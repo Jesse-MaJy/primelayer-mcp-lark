@@ -49,9 +49,8 @@ class AdminServiceTest {
         jdbcTemplate.execute("""
                 create table project_mcp_token (
                   id bigint auto_increment primary key,
-                  owner_type varchar(32) not null,
-                  owner_id varchar(128) not null,
-                  primelayer_user_id varchar(128) not null,
+                  feishu_open_id varchar(128) not null,
+                  mcp_user_id varchar(128),
                   project_id varchar(128) not null,
                   project_name varchar(256) not null,
                   project_remark varchar(256),
@@ -71,9 +70,8 @@ class AdminServiceTest {
         AppProperties properties = new AppProperties(
                 new AppProperties.Admin(28800, "admin", "admin"),
                 new AppProperties.Agent(5, 10000, 10000),
-                new AppProperties.AgentService(false, ""),
                 new AppProperties.Feishu("", "", "", "", false),
-                new AppProperties.DeepSeek("", "", ""),
+                new AppProperties.DeepSeek("", ""),
                 new AppProperties.Mcp("http://localhost/mcp", "X-API-Key")
         );
         mcpAdapter = new CountingMcpAdapter(properties);
@@ -129,11 +127,26 @@ class AdminServiceTest {
         assertThat(jdbcTemplate.queryForObject("select project_name from project_mcp_token", String.class)).isEqualTo("Roche Updated");
     }
 
+    @Test
+    void acceptsTokenWhenReadOnlyMetadataDoesNotExposeMcpUserId() {
+        Map<String, Object> result = adminService.verifyProjectToken(
+                new AdminDtos.ProjectTokenVerifyRequest("ou_1", "token-one"));
+
+        assertThat(result).containsEntry("ok", true).containsEntry("toolCount", 1);
+        assertThat(result.get("mcpUserId")).isNull();
+        assertThat((List<?>) result.get("projectCandidates")).singleElement().satisfies(candidate -> {
+            Map<?, ?> project = (Map<?, ?>) candidate;
+            assertThat(project.get("projectId")).isEqualTo("Asia Manufacturing Expansion Facility Suzhou Project");
+            assertThat(project.get("workspace")).isEqualTo("Construction Management");
+            assertThat(project.get("tenant")).isEqualTo("ROCHE AMEFS PROJECT");
+        });
+        assertThat((List<?>) result.get("warnings")).extracting(String::valueOf)
+                .contains("MCP 未暴露用户 ID；后续调用将使用 Token 自身的账号与项目权限上下文。");
+    }
+
     private AdminDtos.ProjectTokenRequest projectTokenRequest(Long id, String ownerId, String projectId, String projectName, String token, boolean replaceToken, String status) {
         return new AdminDtos.ProjectTokenRequest(
                 id,
-                "OPEN_ID",
-                ownerId,
                 ownerId,
                 projectId,
                 projectName,
@@ -157,11 +170,20 @@ class AdminServiceTest {
             listToolsCalls++;
             return Map.of(
                     "result", Map.of(
-                            "tools", List.of(Map.of("name", "get_account_info")),
-                            "projectId", "Roche",
-                            "projectName", "Roche"
+                            "tools", List.of(Map.of("name", "get_account_info"))
                     )
             );
+        }
+
+        @Override
+        public Map<String, Object> callTool(String token, String toolName, Map<String, Object> arguments) {
+            return Map.of("result", Map.of("content", List.of(Map.of(
+                    "type", "text",
+                    "text", "{\"data\":{\"email\":\"user@example.com\",\"organizationName\":\"Support\","
+                            + "\"project\":\"Asia Manufacturing Expansion Facility Suzhou Project\","
+                            + "\"tenantFullName\":\"ROCHE AMEFS PROJECT\",\"tenantShortName\":\"ROCHE\","
+                            + "\"workspaceName\":\"Construction Management\"},\"success\":true}"
+            ))));
         }
 
         int listToolsCalls() {

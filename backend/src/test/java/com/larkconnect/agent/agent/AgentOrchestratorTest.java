@@ -1,733 +1,194 @@
 package com.larkconnect.agent.agent;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.larkconnect.agent.ai.AiEngineType;
-import com.larkconnect.agent.ai.AiRuntimeConfigService;
-import com.larkconnect.agent.ai.AnswerEngineRouter;
-import com.larkconnect.agent.ai.FastGptAnswerEngine;
-import com.larkconnect.agent.ai.FastGptClient;
 import com.larkconnect.agent.audit.AuditService;
-import com.larkconnect.agent.audit.ChainTrace;
 import com.larkconnect.agent.audit.ChainTraceService;
-import com.larkconnect.agent.common.Status;
-import com.larkconnect.agent.config.AppProperties;
-import com.larkconnect.agent.deepseek.DeepSeekClient;
 import com.larkconnect.agent.feishu.FeishuClient;
 import com.larkconnect.agent.mcp.McpAdapter;
-import com.larkconnect.agent.mcp.McpAdapter.PageData;
-import com.larkconnect.agent.mcp.McpAdapter.PaginationResult;
-import com.larkconnect.agent.mcp.McpToolRegistry;
 import com.larkconnect.agent.token.TokenResolver;
 import org.junit.jupiter.api.Test;
-import org.springframework.web.client.RestClient;
 
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Deque;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicReference;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.inOrder;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class AgentOrchestratorTest {
     @Test
-    void usesFastGptForNormalQuestionsWhenSelectedAndSkipsLocalMcpFlow() {
-        FakeTaskService taskService = new FakeTaskService(task("你好，介绍一下你自己"));
-        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
-        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
-        FakeFeishuClient feishuClient = new FakeFeishuClient();
-        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
-        FakeFastGptClient fastGptClient = new FakeFastGptClient("FastGPT 已回答");
-        FakeAuditService auditService = new FakeAuditService();
+    void sendsBusinessQuestionThroughUnifiedQueryService() {
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        UnifiedQueryService unified = mock(UnifiedQueryService.class);
+        FeishuClient feishu = mock(FeishuClient.class);
+        AuditService audit = mock(AuditService.class);
+        ChainTraceService traces = mock(ChainTraceService.class);
+        when(tasks.loadTask("r1")).thenReturn(task("分析 Roche 本月质量风险"));
+        when(unified.query(any())).thenReturn(result("mcp_deepseek", "风险分析完成"));
 
-        orchestrator(
-                taskService,
-                new FakeDeepSeekClient(),
-                tokenResolver,
-                mcpAdapter,
-                feishuClient,
-                agentServiceClient,
-                router(AiEngineType.FASTGPT, fastGptClient),
-                auditService
-        ).process("req-fastgpt");
+        orchestrator(tasks, unified, feishu, audit, traces).process("r1");
 
-        assertThat(fastGptClient.requests).hasSize(1);
-        assertThat(fastGptClient.requests.get(0).question()).isEqualTo("你好，介绍一下你自己");
-        assertThat(fastGptClient.requests.get(0).chatId()).isEqualTo("open-1");
-        assertThat(mcpAdapter.calledTools).isEmpty();
-        assertThat(agentServiceClient.requests).isZero();
-        assertThat(feishuClient.lastAnswer).isEqualTo("FastGPT 已回答");
-        assertThat(auditService.mainIntents).containsExactly("fastgpt_answer");
-        assertThat(auditService.modelPurposes).containsExactly("fastgpt_answer");
+        verify(unified).query(new UnifiedQueryService.QueryRequest("r1", "分析 Roche 本月质量风险", "p2p", "u1", "c1"));
+        verify(feishu).replyAnswerFeedbackCard(
+                eq("m1"), eq("r1"), eq("分析 Roche 本月质量风险"),
+                any(AnswerPresentation.class),
+                eq("工程管理分析"), eq("blue"));
+        verify(traces).save(eq("r1"), any());
+        verify(audit).updateProcessingLatency(eq("r1"), any(Long.class));
+        verify(audit).writeModel(eq("r1"), eq("deepseek-v4-pro"), eq("mcp_deepseek"),
+                argThat(summary -> summary.contains("physicalMcpCalls=2")
+                        && summary.contains("pages=2")
+                        && summary.contains("inputTokens=20")),
+                eq("{\"plainText\":\"风险分析完成\"}"), eq("SUCCEEDED"), eq(100L), eq(null));
+        var order = inOrder(audit, feishu);
+        order.verify(audit).writeMain(eq("r1"), eq("u1"), eq("c1"), eq(null), eq(List.of("P1")),
+                eq("分析 Roche 本月质量风险"), eq("mcp_deepseek"), eq("风险分析完成"),
+                eq("{\"plainText\":\"风险分析完成\"}"), any(Long.class), eq(null));
+        order.verify(feishu).replyAnswerFeedbackCard(
+                eq("m1"), eq("r1"), eq("分析 Roche 本月质量风险"), any(AnswerPresentation.class),
+                eq("工程管理分析"), eq("blue"));
     }
 
     @Test
-    void usesLocalAgentForMcpProjectQuestionsEvenWhenFastGptIsSelected() {
-        FakeTaskService taskService = new FakeTaskService(task("roche上个月质量问题"));
-        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
-        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
-        mcpAdapter.tools = tools("match_form_resource");
-        mcpAdapter.results.put("match_form_resource", Map.of("forms", List.of(Map.of("formName", "质量缺陷清单"))));
-        FakeFeishuClient feishuClient = new FakeFeishuClient();
-        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
-        agentServiceClient.responses.add(answerWithCalls(
-                new AgentServiceDtos.ToolCall("match_form_resource", Map.of("name", "质量缺陷清单"), List.of("Roche"), "匹配质量表单", null, "discover_quality_core_forms")));
-        agentServiceClient.responses.add(finalAnswer("质量问题查询完成"));
-        FakeFastGptClient fastGptClient = new FakeFastGptClient("FastGPT should not answer");
+    void keepsMcpConfigurationCheckOutsideBusinessAnswerEngine() {
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        UnifiedQueryService unified = mock(UnifiedQueryService.class);
+        FeishuClient feishu = mock(FeishuClient.class);
+        TokenResolver resolver = mock(TokenResolver.class);
+        McpAdapter adapter = mock(McpAdapter.class);
+        AuditService audit = mock(AuditService.class);
+        ChainTraceService traces = mock(ChainTraceService.class);
+        when(tasks.loadTask("r2")).thenReturn(task("检查 MCP 配置"));
+        when(resolver.checkMcpConfig("u1", "c1", "p2p", 20)).thenReturn(
+                TokenResolver.McpConfigCheckResult.configured("u1", "pl", "OPEN_ID", "u1", List.of()));
+        when(resolver.resolveCandidates("u1", "c1", "p2p", 20)).thenReturn(
+                TokenResolver.ResolvedContext.ok("pl", List.of()));
 
-        orchestrator(
-                taskService,
-                new FakeDeepSeekClient(),
-                tokenResolver,
-                mcpAdapter,
-                feishuClient,
-                agentServiceClient,
-                router(AiEngineType.FASTGPT, fastGptClient),
-                new FakeAuditService()
-        ).process("req-mcp-fastgpt");
+        new AgentOrchestrator(tasks, unified, resolver, adapter, feishu, audit, traces, new ControlCommandRouter(), 20).process("r2");
 
-        assertThat(fastGptClient.requests).isEmpty();
-        assertThat(agentServiceClient.requests).isEqualTo(2);
-        assertThat(mcpAdapter.calledTools).containsExactly("match_form_resource");
-        assertThat(feishuClient.lastAnswer).isEqualTo("质量问题查询完成");
-        assertThat(feishuClient.lastTitle).isEqualTo("项目查询");
+        verify(unified, never()).query(any());
+        verify(feishu).replyAnswerCard(eq("m1"), eq("检查 MCP 配置"), any(), eq("MCP 配置状态"), any());
     }
 
     @Test
-    void skipsFastGptForMcpProjectQuestionsEvenWhenFastGptWouldFail() {
-        FakeTaskService taskService = new FakeTaskService(task("Roche今日施工情况"));
-        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
-        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
-        mcpAdapter.tools = tools("get_report");
-        mcpAdapter.results.put("get_report", Map.of("content", "施工正常"));
-        FakeFeishuClient feishuClient = new FakeFeishuClient();
-        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
-        agentServiceClient.responses.add(answerWithCalls(new AgentServiceDtos.ToolCall("get_report", Map.of(), List.of("Roche"), "日报", null, null)));
-        agentServiceClient.responses.add(finalAnswer("本地 agent 已回答"));
-        FakeFastGptClient fastGptClient = new FakeFastGptClient(new IllegalStateException("FastGPT timeout"));
-        FakeAuditService auditService = new FakeAuditService();
+    void reportsFailedOutcomeWhenDeepSeekIsUnavailable() {
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        UnifiedQueryService unified = mock(UnifiedQueryService.class);
+        FeishuClient feishu = mock(FeishuClient.class);
+        AuditService audit = mock(AuditService.class);
+        ChainTraceService traces = mock(ChainTraceService.class);
+        when(tasks.loadTask("r3")).thenReturn(task("分析项目"));
+        when(unified.query(any())).thenThrow(new IllegalStateException("DeepSeek unavailable"));
 
-        orchestrator(
-                taskService,
-                new FakeDeepSeekClient(),
-                tokenResolver,
-                mcpAdapter,
-                feishuClient,
-                agentServiceClient,
-                router(AiEngineType.FASTGPT, fastGptClient),
-                auditService
-        ).process("req-fallback");
+        AgentOrchestrator.ProcessResult outcome = orchestrator(tasks, unified, feishu, audit, traces).process("r3");
 
-        assertThat(fastGptClient.requests).isEmpty();
-        assertThat(mcpAdapter.calledTools).containsExactly("get_report");
-        assertThat(feishuClient.lastAnswer).isEqualTo("本地 agent 已回答");
-        assertThat(auditService.modelPurposes).doesNotContain("fastgpt_fallback");
+        assertThat(outcome.succeeded()).isFalse();
+        assertThat(outcome.error()).isEqualTo("AI 服务暂不可用");
+        verify(feishu).replyAnswerCard("m1", "分析项目", "AI 服务暂不可用，已记录本次请求，请稍后重试。", "AI 服务异常", "orange");
+        verify(traces).save(eq("r3"), any());
     }
 
     @Test
-    void keepsMcpConfigStatusLocalWhenFastGptIsSelected() {
-        FakeTaskService taskService = new FakeTaskService(task("配置正常"));
-        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
-        tokenResolver.checkResult = TokenResolver.McpConfigCheckResult.configured("open-1", "pl-user", "OPEN_ID", "open-1", List.of(new TokenResolver.ProjectRef("Roche", "Roche")));
-        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
-        mcpAdapter.tools = tools("get_account_info");
-        FakeFeishuClient feishuClient = new FakeFeishuClient();
-        FakeFastGptClient fastGptClient = new FakeFastGptClient("FastGPT should not answer");
+    void marksRecoveredDeepSeekResponseFailureAsPartialInsteadOfFailed() {
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        UnifiedQueryService unified = mock(UnifiedQueryService.class);
+        FeishuClient feishu = mock(FeishuClient.class);
+        AuditService audit = mock(AuditService.class);
+        ChainTraceService traces = mock(ChainTraceService.class);
+        when(tasks.loadTask("r-partial")).thenReturn(task("分析项目"));
+        UnifiedQueryService.QueryResult partial = new UnifiedQueryService.QueryResult(
+                "mcp_deepseek", "已取得数据的部分结果", AnswerPresentation.markdownOnly("部分结果"),
+                null, "deepseek-v4-pro", 1, 1, 1, 1, 0, 0,
+                List.of("query_tasks"), List.of("P1"), List.of("DeepSeek 响应解析失败"),
+                "deepseek_response_error", 20, 10, 0, 0, 0, 0, true, 100);
+        when(unified.query(any())).thenReturn(partial);
 
-        orchestrator(
-                taskService,
-                new FakeDeepSeekClient(),
-                tokenResolver,
-                mcpAdapter,
-                feishuClient,
-                new FakeAgentServiceClient(),
-                router(AiEngineType.FASTGPT, fastGptClient),
-                new FakeAuditService()
-        ).process("req-config");
+        AgentOrchestrator.ProcessResult outcome = orchestrator(tasks, unified, feishu, audit, traces)
+                .process("r-partial");
 
-        assertThat(fastGptClient.requests).isEmpty();
-        assertThat(feishuClient.lastTitle).isEqualTo("MCP 配置状态");
-        assertThat(feishuClient.lastAnswer).contains("MCP 配置已绑定");
+        assertThat(outcome.succeeded()).isTrue();
+        assertThat(outcome.partial()).isTrue();
+        verify(feishu).replyAnswerFeedbackCard(eq("m1"), eq("r-partial"), eq("分析项目"),
+                any(AnswerPresentation.class), eq("工程管理分析（受限）"), eq("orange"));
     }
 
     @Test
-    void executesAgentServiceToolCallsUntilFinalAnswer() {
-        FakeTaskService taskService = new FakeTaskService(task("Roche今日施工情况"));
-        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
-        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
-        mcpAdapter.tools = tools("get_report", "get_async_task_result");
-        mcpAdapter.results.put("get_report", Map.of("taskId", "task-123"));
-        mcpAdapter.results.put("get_async_task_result", Map.of("content", "施工正常"));
-        FakeFeishuClient feishuClient = new FakeFeishuClient();
-        FakeDeepSeekClient deepSeekClient = new FakeDeepSeekClient();
-        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
-        agentServiceClient.responses.add(answerWithCalls(new AgentServiceDtos.ToolCall("get_report", Map.of("reportType", "DAILY"), List.of("Roche"), "日报", null, null)));
-        agentServiceClient.responses.add(answerWithCalls(new AgentServiceDtos.ToolCall("get_async_task_result", Map.of("taskId", "task-123"), List.of("Roche"), "轮询", null, null)));
-        agentServiceClient.responses.add(finalAnswer("项目报告已生成"));
+    void keepsNormalManagementTitleForNonCriticalInternalWarning() {
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        UnifiedQueryService unified = mock(UnifiedQueryService.class);
+        FeishuClient feishu = mock(FeishuClient.class);
+        AuditService audit = mock(AuditService.class);
+        ChainTraceService traces = mock(ChainTraceService.class);
+        when(tasks.loadTask("r-warning")).thenReturn(task("分析项目质量"));
+        when(unified.query(any())).thenReturn(result(
+                "mcp_deepseek", "质量总体可控", List.of("回答展示 JSON 无效，已降级为 Markdown。"), false));
 
-        orchestrator(taskService, deepSeekClient, tokenResolver, mcpAdapter, feishuClient, agentServiceClient).process("req-1");
+        AgentOrchestrator.ProcessResult outcome = orchestrator(tasks, unified, feishu, audit, traces)
+                .process("r-warning");
 
-        assertThat(mcpAdapter.calledTools).containsExactly("get_report", "get_async_task_result");
-        assertThat(feishuClient.lastMessageId).isEqualTo("msg-1");
-        assertThat(feishuClient.lastQuestion).isEqualTo("Roche今日施工情况");
-        assertThat(feishuClient.lastAnswer).isEqualTo("项目报告已生成");
-        assertThat(feishuClient.lastTitle).isEqualTo("项目查询");
-        assertThat(deepSeekClient.summarizeCalls).isZero();
+        assertThat(outcome.succeeded()).isTrue();
+        assertThat(outcome.partial()).isFalse();
+        verify(feishu).replyAnswerFeedbackCard(eq("m1"), eq("r-warning"), eq("分析项目质量"),
+                any(AnswerPresentation.class), eq("工程管理分析"), eq("blue"));
     }
 
     @Test
-    void repliesBusinessUnavailableCopyWhenProjectContextCannotResolve() {
-        FakeTaskService taskService = new FakeTaskService(task("Roche今日施工情况"));
-        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.error("当前飞书 open_id 下没有 ACTIVE MCP Token。请在「人员配置」中配置。"));
-        tokenResolver.checkResult = TokenResolver.McpConfigCheckResult.missing("open-1", null, null, null, "缺少项目访问配置");
-        FakeFeishuClient feishuClient = new FakeFeishuClient();
+    void reportsFeishuDeliveryFailureWithoutOverwritingSuccessfulAiResult() {
+        AgentTaskService tasks = mock(AgentTaskService.class);
+        UnifiedQueryService unified = mock(UnifiedQueryService.class);
+        FeishuClient feishu = mock(FeishuClient.class);
+        AuditService audit = mock(AuditService.class);
+        ChainTraceService traces = mock(ChainTraceService.class);
+        when(tasks.loadTask("r-send")).thenReturn(task("分析项目"));
+        when(unified.query(any())).thenReturn(result("mcp_deepseek", "风险分析完成"));
+        when(feishu.replyAnswerFeedbackCard(
+                eq("m1"), eq("r-send"), eq("分析项目"), any(AnswerPresentation.class),
+                eq("工程管理分析"), eq("blue")))
+                .thenThrow(new IllegalStateException("card table number over limit"));
 
-        orchestrator(taskService, new FakeDeepSeekClient(), tokenResolver, new FakeMcpAdapter(), feishuClient, new FakeAgentServiceClient()).process("req-2");
+        AgentOrchestrator.ProcessResult outcome = orchestrator(tasks, unified, feishu, audit, traces).process("r-send");
 
-        assertThat(feishuClient.lastTitle).isEqualTo("项目数据暂不可用");
-        assertThat(feishuClient.lastTemplate).isEqualTo("orange");
-        assertThat(feishuClient.lastAnswer).contains("暂时无法访问项目数据");
-        assertThat(feishuClient.lastAnswer).doesNotContain("人员配置");
-        assertThat(feishuClient.lastAnswer).doesNotContain("MCP Token");
+        assertThat(outcome.succeeded()).isFalse();
+        assertThat(outcome.error()).isEqualTo(
+                "飞书消息发送失败：卡片表格数量超过飞书上限（最多 5 个）");
+        verify(audit, never()).writeModel(any(), any(), eq("unified_query"), any(), any(),
+                eq("FAILED"), any(Long.class), any());
+        verify(audit).writeMain(eq("r-send"), eq("u1"), eq("c1"), eq(null), eq(List.of("P1")),
+                eq("分析项目"), eq("mcp_deepseek"), eq("风险分析完成"),
+                eq("{\"plainText\":\"风险分析完成\"}"), any(Long.class),
+                eq("飞书消息发送失败：卡片表格数量超过飞书上限（最多 5 个）"));
+        verify(feishu).replyAnswerCard("m1", "分析项目",
+                "AI 已完成回答，但飞书消息发送失败：卡片表格数量超过飞书上限（最多 5 个）",
+                "飞书消息发送失败", "orange");
     }
 
-    @Test
-    void shouldUsePaginationWhenModeIsAuto() {
-        FakeTaskService taskService = new FakeTaskService(task("Roche施工日报"));
-        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
-        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
-        mcpAdapter.tools = tools("query_form_data_list");
-        FakeFeishuClient feishuClient = new FakeFeishuClient();
-        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
-
-        agentServiceClient.responses.add(answerWithCalls(
-                new AgentServiceDtos.ToolCall("query_form_data_list", Map.of("formId", "test"), List.of("Roche"), "test reason",
-                        Map.of("mode", "auto", "pageSize", 100, "maxPages", 50, "maxItems", 5000), "test purpose")));
-        agentServiceClient.responses.add(finalAnswer("查询完成"));
-
-        orchestrator(taskService, new FakeDeepSeekClient(), tokenResolver, mcpAdapter, feishuClient, agentServiceClient).process("req-paginated");
-
-        assertThat(mcpAdapter.calledTools).isEmpty();
-        assertThat(mcpAdapter.calledPaginatedTools).containsExactly("query_form_data_list");
-        assertThat(feishuClient.lastAnswer).isEqualTo("查询完成");
+    private AgentOrchestrator orchestrator(AgentTaskService tasks, UnifiedQueryService unified,
+                                           FeishuClient feishu, AuditService audit, ChainTraceService traces) {
+        return new AgentOrchestrator(tasks, unified, mock(TokenResolver.class), mock(McpAdapter.class),
+                feishu, audit, traces, new ControlCommandRouter(), 20);
     }
 
-    @Test
-    void shouldNotUsePaginationWhenPaginationIsNull() {
-        FakeTaskService taskService = new FakeTaskService(task("Roche施工日报"));
-        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
-        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
-        mcpAdapter.tools = tools("query_form_data_list");
-        mcpAdapter.results.put("query_form_data_list", Map.of("content", "数据"));
-        FakeFeishuClient feishuClient = new FakeFeishuClient();
-        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
-
-        agentServiceClient.responses.add(answerWithCalls(
-                new AgentServiceDtos.ToolCall("query_form_data_list", Map.of("formId", "test"), List.of("Roche"), "test reason", null, null)));
-        agentServiceClient.responses.add(finalAnswer("查询完成"));
-
-        orchestrator(taskService, new FakeDeepSeekClient(), tokenResolver, mcpAdapter, feishuClient, agentServiceClient).process("req-single");
-
-        assertThat(mcpAdapter.calledTools).containsExactly("query_form_data_list");
-        assertThat(mcpAdapter.calledPaginatedTools).isEmpty();
+    private Map<String, Object> task(String question) {
+        return Map.of("message_text", question, "feishu_message_id", "m1", "feishu_chat_id", "c1",
+                "feishu_open_id", "u1", "chat_type", "p2p");
     }
 
-    @Test
-    void shouldReturnPaginatedResultWithMetadata() {
-        FakeTaskService taskService = new FakeTaskService(task("Roche施工日报"));
-        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
-        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
-        mcpAdapter.tools = tools("query_form_data_list");
-        FakeFeishuClient feishuClient = new FakeFeishuClient();
-        FakeDeepSeekClient deepSeekClient = new FakeDeepSeekClient();
-        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
-
-        agentServiceClient.responses.add(answerWithCalls(
-                new AgentServiceDtos.ToolCall("query_form_data_list", Map.of("formId", "test"), List.of("Roche"), "test reason",
-                        Map.of("mode", "auto", "pageSize", 50), "test purpose")));
-        agentServiceClient.responses.add(finalAnswer("查询完成"));
-
-        orchestrator(taskService, deepSeekClient, tokenResolver, mcpAdapter, feishuClient, agentServiceClient).process("req-metadata");
-
-        assertThat(mcpAdapter.calledPaginatedTools).containsExactly("query_form_data_list");
-        assertThat(deepSeekClient.summarizeCalls).isZero();
-        assertThat(feishuClient.lastAnswer).isEqualTo("查询完成");
+    private UnifiedQueryService.QueryResult result(String path, String answer) {
+        return result(path, answer, List.of(), false);
     }
 
-    @Test
-    void shouldReturnPartialResultsWhenPageFails() {
-        FakeTaskService taskService = new FakeTaskService(task("Roche施工日报"));
-        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
-        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
-        mcpAdapter.tools = tools("query_form_data_list");
-        mcpAdapter.paginationResult = new PaginationResult(
-                List.of(
-                        new PageData(0, 100, Status.SUCCEEDED, Map.of(), Map.of("items", List.of(Map.of("id", 1))), null, 10),
-                        new PageData(1, 100, Status.FAILED, Map.of(), null, "MCP timeout", 50)
-                ),
-                150, 2, 1, 1
-        );
-        FakeFeishuClient feishuClient = new FakeFeishuClient();
-        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
-
-        agentServiceClient.responses.add(answerWithCalls(
-                new AgentServiceDtos.ToolCall("query_form_data_list", Map.of("formId", "test"), List.of("Roche"), "test reason",
-                        Map.of("mode", "auto", "pageSize", 100), "test purpose")));
-        agentServiceClient.responses.add(finalAnswer("查询完成"));
-
-        orchestrator(taskService, new FakeDeepSeekClient(), tokenResolver, mcpAdapter, feishuClient, agentServiceClient).process("req-partial");
-
-        assertThat(mcpAdapter.calledPaginatedTools).containsExactly("query_form_data_list");
-        assertThat(feishuClient.lastAnswer).isEqualTo("查询完成");
-    }
-
-    @Test
-    void shouldIncludePurposeAndPaginationInTrace() {
-        AtomicReference<ChainTrace> capturedTrace = new AtomicReference<>();
-        FakeTaskService taskService = new FakeTaskService(task("Roche施工日报"));
-        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
-        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
-        mcpAdapter.tools = tools("query_form_data_list");
-        FakeFeishuClient feishuClient = new FakeFeishuClient();
-        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
-
-        agentServiceClient.responses.add(answerWithCalls(
-                new AgentServiceDtos.ToolCall("query_form_data_list", Map.of("formId", "daily_report"), List.of("Roche"), "日报查询",
-                        Map.of("mode", "auto", "pageSize", 100), "获取施工日报")));
-        agentServiceClient.responses.add(finalAnswer("查询完成"));
-
-        orchestratorWithTraceCapture(taskService, tokenResolver, mcpAdapter, feishuClient, agentServiceClient, capturedTrace)
-                .process("req-purpose");
-
-        assertThat(capturedTrace.get()).isNotNull();
-        List<ChainTrace.Node> nodes = capturedTrace.get().nodes;
-        // Find MCP call nodes
-        List<ChainTrace.Node> mcpNodes = nodes.stream()
-                .filter(n -> "mcp_call".equals(n.type()))
-                .toList();
-        assertThat(mcpNodes).isNotEmpty();
-        ChainTrace.Node mcpNode = mcpNodes.get(0);
-        assertThat(mcpNode.metadata())
-                .containsEntry("purpose", "获取施工日报")
-                .containsEntry("pagination", Map.of("mode", "auto", "pageSize", 100));
-    }
-
-    @Test
-    void shouldIncludePaginationCountFieldsInTrace() {
-        AtomicReference<ChainTrace> capturedTrace = new AtomicReference<>();
-        FakeTaskService taskService = new FakeTaskService(task("Roche施工日报"));
-        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
-        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
-        mcpAdapter.tools = tools("query_form_data_list");
-        mcpAdapter.paginationResult = new PaginationResult(
-                List.of(
-                        new PageData(0, 100, Status.SUCCEEDED, Map.of(), Map.of("items", List.of(Map.of("id", 1))), null, 10),
-                        new PageData(1, 100, Status.SUCCEEDED, Map.of(), Map.of("items", List.of(Map.of("id", 2))), null, 10)
-                ),
-                150, 2, 2, 0
-        );
-        FakeFeishuClient feishuClient = new FakeFeishuClient();
-        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
-
-        agentServiceClient.responses.add(answerWithCalls(
-                new AgentServiceDtos.ToolCall("query_form_data_list", Map.of("formId", "daily_report"), List.of("Roche"), "日报查询",
-                        Map.of("mode", "auto", "pageSize", 100, "maxItems", 5000), "获取施工日报")));
-        agentServiceClient.responses.add(finalAnswer("查询完成"));
-
-        orchestratorWithTraceCapture(taskService, tokenResolver, mcpAdapter, feishuClient, agentServiceClient, capturedTrace)
-                .process("req-count");
-
-        assertThat(capturedTrace.get()).isNotNull();
-        List<ChainTrace.Node> mcpNodes = capturedTrace.get().nodes.stream()
-                .filter(n -> "mcp_call".equals(n.type()))
-                .toList();
-        assertThat(mcpNodes).isNotEmpty();
-        ChainTrace.Node mcpNode = mcpNodes.get(0);
-        assertThat(mcpNode.metadata())
-                .containsEntry("totalCount", 150)
-                .containsEntry("pageSize", 100)
-                .containsEntry("truncated", false)
-                .containsEntry("dataSourceName", "daily_report");
-    }
-
-    @Test
-    void shouldMarkTruncatedWhenExceedsLimit() {
-        AtomicReference<ChainTrace> capturedTrace = new AtomicReference<>();
-        FakeTaskService taskService = new FakeTaskService(task("Roche施工日报"));
-        FakeTokenResolver tokenResolver = new FakeTokenResolver(TokenResolver.ResolvedContext.ok("pl-user", List.of(token())));
-        FakeMcpAdapter mcpAdapter = new FakeMcpAdapter();
-        mcpAdapter.tools = tools("query_form_data_list");
-        // totalCount 8000 > maxItems 5000, so truncated should be true
-        mcpAdapter.paginationResult = new PaginationResult(
-                List.of(new PageData(0, 100, Status.SUCCEEDED, Map.of(), Map.of("items", List.of(Map.of("id", 1))), null, 10)),
-                8000, 80, 1, 0
-        );
-        FakeFeishuClient feishuClient = new FakeFeishuClient();
-        FakeAgentServiceClient agentServiceClient = new FakeAgentServiceClient();
-
-        agentServiceClient.responses.add(answerWithCalls(
-                new AgentServiceDtos.ToolCall("query_form_data_list", Map.of("formId", "daily_report"), List.of("Roche"), "日报查询",
-                        Map.of("mode", "auto", "pageSize", 100, "maxItems", 5000), "获取施工日报")));
-        agentServiceClient.responses.add(finalAnswer("查询完成"));
-
-        orchestratorWithTraceCapture(taskService, tokenResolver, mcpAdapter, feishuClient, agentServiceClient, capturedTrace)
-                .process("req-truncated");
-
-        assertThat(capturedTrace.get()).isNotNull();
-        List<ChainTrace.Node> mcpNodes = capturedTrace.get().nodes.stream()
-                .filter(n -> "mcp_call".equals(n.type()))
-                .toList();
-        assertThat(mcpNodes).isNotEmpty();
-        ChainTrace.Node mcpNode = mcpNodes.get(0);
-        assertThat(mcpNode.metadata())
-                .containsEntry("totalCount", 8000)
-                .containsEntry("truncated", true);
-    }
-
-    private AgentOrchestrator orchestratorWithTraceCapture(
-            FakeTaskService taskService,
-            FakeTokenResolver tokenResolver,
-            FakeMcpAdapter mcpAdapter,
-            FakeFeishuClient feishuClient,
-            FakeAgentServiceClient agentServiceClient,
-            AtomicReference<ChainTrace> traceHolder
-    ) {
-        ChainTraceService traceCapture = new ChainTraceService(null, new ObjectMapper()) {
-            @Override
-            public void save(String requestId, ChainTrace trace) {
-                traceHolder.set(trace);
-            }
-        };
-        return new AgentOrchestrator(
-                taskService,
-                new FakeDeepSeekClient(),
-                tokenResolver,
-                new McpToolRegistry(),
-                mcpAdapter,
-                feishuClient,
-                new FakeAuditService(),
-                properties(),
-                new ObjectMapper(),
-                agentServiceClient,
-                new IntentRouter(),
-                router(AiEngineType.LOCAL_AGENT, new FakeFastGptClient("unused")),
-                traceCapture
-        );
-    }
-
-    private AgentOrchestrator orchestrator(
-            AgentTaskService taskService,
-            DeepSeekClient deepSeekClient,
-            TokenResolver tokenResolver,
-            McpAdapter mcpAdapter,
-            FeishuClient feishuClient,
-            AgentServiceClient agentServiceClient
-    ) {
-        return orchestrator(
-                taskService,
-                deepSeekClient,
-                tokenResolver,
-                mcpAdapter,
-                feishuClient,
-                agentServiceClient,
-                router(AiEngineType.LOCAL_AGENT, new FakeFastGptClient("unused")),
-                new FakeAuditService()
-        );
-    }
-
-    private AgentOrchestrator orchestrator(
-            AgentTaskService taskService,
-            DeepSeekClient deepSeekClient,
-            TokenResolver tokenResolver,
-            McpAdapter mcpAdapter,
-            FeishuClient feishuClient,
-            AgentServiceClient agentServiceClient,
-            AnswerEngineRouter answerEngineRouter,
-            AuditService auditService
-    ) {
-        return new AgentOrchestrator(
-                taskService,
-                deepSeekClient,
-                tokenResolver,
-                new McpToolRegistry(),
-                mcpAdapter,
-                feishuClient,
-                auditService,
-                properties(),
-                new ObjectMapper(),
-                agentServiceClient,
-                new IntentRouter(),
-                answerEngineRouter,
-                new ChainTraceService(null, new ObjectMapper()) {
-                    @Override
-                    public void save(String requestId, ChainTrace trace) {
-                        // no-op in tests
-                    }
-                }
-        );
-    }
-
-    private AnswerEngineRouter router(AiEngineType engineType, FastGptClient fastGptClient) {
-        return new AnswerEngineRouter(new FakeAiRuntimeConfigService(engineType), new FastGptAnswerEngine(fastGptClient));
-    }
-
-    private static Map<String, Object> task(String question) {
-        Map<String, Object> task = new LinkedHashMap<>();
-        task.put("message_text", question);
-        task.put("feishu_message_id", "msg-1");
-        task.put("feishu_chat_id", "chat-1");
-        task.put("feishu_open_id", "open-1");
-        task.put("chat_type", "p2p");
-        return task;
-    }
-
-    private static TokenResolver.TokenEntry token() {
-        return new TokenResolver.TokenEntry(1L, "Roche", "Roche", "罗诊", "token");
-    }
-
-    private static AgentServiceDtos.AgentAnswerResponse answerWithCalls(AgentServiceDtos.ToolCall call) {
-        return new AgentServiceDtos.AgentAnswerResponse(false, null, "project_report", "single_project", List.of("Roche"), List.of(call), null, Map.of());
-    }
-
-    private static AgentServiceDtos.AgentAnswerResponse finalAnswer(String answer) {
-        return new AgentServiceDtos.AgentAnswerResponse(false, null, "project_report", "single_project", List.of("Roche"), List.of(), answer, Map.of());
-    }
-
-    private static Map<String, Object> tools(String... names) {
-        List<Map<String, Object>> toolList = new ArrayList<>();
-        for (String name : names) {
-            toolList.add(Map.of(
-                    "name", name,
-                    "description", name,
-                    "inputSchema", Map.of("type", "object", "properties", Map.of())
-            ));
-        }
-        return Map.of("result", Map.of("tools", toolList));
-    }
-
-    private static AppProperties properties() {
-        return new AppProperties(
-                new AppProperties.Admin(3600, "admin", "admin"),
-                new AppProperties.Agent(5, 30000, 30000),
-                new AppProperties.AgentService(true, "http://localhost:8090"),
-                new AppProperties.Feishu("", "", "", "", false),
-                new AppProperties.DeepSeek("https://api.deepseek.com", "key", "deepseek-chat"),
-                new AppProperties.Mcp("http://localhost/mcp", "X-API-Key")
-        );
-    }
-
-    private static class FakeTaskService extends AgentTaskService {
-        private final Map<String, Object> task;
-
-        FakeTaskService(Map<String, Object> task) {
-            super(null, null);
-            this.task = task;
-        }
-
-        @Override
-        public Map<String, Object> loadTask(String requestId) {
-            return task;
-        }
-    }
-
-    private static class FakeTokenResolver extends TokenResolver {
-        private final ResolvedContext context;
-        private McpConfigCheckResult checkResult = McpConfigCheckResult.configured("open-1", "pl-user", "OPEN_ID", "open-1", List.of(new ProjectRef("Roche", "Roche")));
-
-        FakeTokenResolver(ResolvedContext context) {
-            super(null, null);
-            this.context = context;
-        }
-
-        @Override
-        public ResolvedContext resolveCandidates(String openId, String chatId, String chatType, int maxProjects) {
-            return context;
-        }
-
-        @Override
-        public McpConfigCheckResult checkMcpConfig(String openId, String chatId, String chatType, int maxProjects) {
-            return checkResult;
-        }
-
-        @Override
-        public void updateVerificationStatus(Long tokenId, String verifyStatus, String verifyError) {
-        }
-    }
-
-    private static class FakeMcpAdapter extends McpAdapter {
-        private Map<String, Object> tools = tools();
-        private final Map<String, Map<String, Object>> results = new LinkedHashMap<>();
-        private final List<String> calledTools = new ArrayList<>();
-        private final List<String> calledPaginatedTools = new ArrayList<>();
-        private PaginationResult paginationResult;
-
-        FakeMcpAdapter() {
-            super(properties(), RestClient.builder(), new ObjectMapper());
-        }
-
-        @Override
-        public Map<String, Object> listTools(String token) {
-            return tools;
-        }
-
-        @Override
-        public Map<String, Object> callTool(String token, String toolName, Map<String, Object> arguments) {
-            calledTools.add(toolName);
-            return results.getOrDefault(toolName, Map.of());
-        }
-
-        @Override
-        public PaginationResult callToolWithPagination(String token, String toolName, Map<String, Object> arguments) {
-            return callToolWithPagination(token, toolName, arguments, 100);
-        }
-
-        @Override
-        public PaginationResult callToolWithPagination(String token, String toolName, Map<String, Object> arguments, int pageSize) {
-            calledPaginatedTools.add(toolName);
-            if (paginationResult != null) {
-                return paginationResult;
-            }
-            return new PaginationResult(
-                    List.of(new PageData(0, pageSize, Status.SUCCEEDED, Map.of(), Map.of("items", List.of(Map.of("id", 1))), null, 10)),
-                    1, 1, 1, 0
-            );
-        }
-    }
-
-    private static class FakeFeishuClient extends FeishuClient {
-        private String lastMessageId;
-        private String lastQuestion;
-        private String lastAnswer;
-        private String lastTitle;
-        private String lastTemplate;
-
-        FakeFeishuClient() {
-            super(properties(), new ObjectMapper(), RestClient.builder());
-        }
-
-        @Override
-        public void replyAnswerCard(String messageId, String question, String answer, String title, String template) {
-            this.lastMessageId = messageId;
-            this.lastQuestion = question;
-            this.lastAnswer = answer;
-            this.lastTitle = title;
-            this.lastTemplate = template;
-        }
-    }
-
-    private static class FakeDeepSeekClient extends DeepSeekClient {
-        private int summarizeCalls;
-        private List<Map<String, Object>> lastSummarizeInput;
-
-        FakeDeepSeekClient() {
-            super(properties(), new ObjectMapper(), RestClient.builder(), new McpToolRegistry());
-        }
-
-        @Override
-        public String answerGeneral(String question) {
-            return "general answer";
-        }
-
-        @Override
-        public String summarize(String question, List<Map<String, Object>> toolResults) {
-            summarizeCalls++;
-            lastSummarizeInput = toolResults;
-            return "fallback";
-        }
-    }
-
-    private static class FakeAgentServiceClient extends AgentServiceClient {
-        private final Deque<AgentServiceDtos.AgentAnswerResponse> responses = new ArrayDeque<>();
-        private int requests;
-
-        FakeAgentServiceClient() {
-            super(properties(), RestClient.builder());
-        }
-
-        @Override
-        public boolean isEnabled() {
-            return true;
-        }
-
-        @Override
-        public AgentServiceDtos.AgentAnswerResponse answer(AgentServiceDtos.AgentAnswerRequest request) {
-            requests++;
-            return responses.isEmpty() ? finalAnswer("默认回答") : responses.removeFirst();
-        }
-    }
-
-    private static class FakeAiRuntimeConfigService extends AiRuntimeConfigService {
-        private final AiSettings settings;
-
-        FakeAiRuntimeConfigService(AiEngineType engineType) {
-            super(null, null);
-            this.settings = new AiSettings(
-                    engineType,
-                    "http://fastgpt.local",
-                    "fastgpt",
-                    "fastgpt-key",
-                    true,
-                    30000,
-                    true
-            );
-        }
-
-        @Override
-        public AiSettings loadSettings() {
-            return settings;
-        }
-    }
-
-    private static class FakeFastGptClient extends FastGptClient {
-        private final List<FastGptRequest> requests = new ArrayList<>();
-        private final String answer;
-        private final RuntimeException failure;
-
-        FakeFastGptClient(String answer) {
-            super(null, null, null);
-            this.answer = answer;
-            this.failure = null;
-        }
-
-        FakeFastGptClient(RuntimeException failure) {
-            super(null, null, null);
-            this.answer = null;
-            this.failure = failure;
-        }
-
-        @Override
-        public FastGptResponse answer(FastGptRequest request, AiRuntimeConfigService.AiSettings settings) {
-            requests.add(request);
-            if (failure != null) {
-                throw failure;
-            }
-            return new FastGptResponse(answer, "raw", 12);
-        }
-    }
-
-    private static class FakeAuditService extends AuditService {
-        private final List<String> mainIntents = new ArrayList<>();
-        private final List<String> modelPurposes = new ArrayList<>();
-
-        FakeAuditService() {
-            super(null, new ObjectMapper());
-        }
-
-        @Override
-        public void writeMain(String requestId, String openId, String chatId, String primelayerUserId, List<String> projectIds, String question, String intent, String answer, long latencyMs, String error) {
-            mainIntents.add(intent);
-        }
-
-        @Override
-        public void writeTool(String requestId, String projectId, String primelayerUserId, String toolName, Map<String, Object> arguments, String status, long latencyMs, String error) {
-        }
-
-        @Override
-        public void writeModel(String requestId, String model, String purpose, String inputSummary, String outputText, String status, long latencyMs, String error) {
-            assertThat(status).isIn(Status.SUCCEEDED, Status.FAILED);
-            modelPurposes.add(purpose);
-        }
+    private UnifiedQueryService.QueryResult result(String path, String answer, List<String> failures,
+                                                   boolean managementConclusionLimited) {
+        AnswerPresentation presentation = new AnswerPresentation(answer,
+                List.of(AnswerPresentation.ContentBlock.markdown("## " + answer)));
+        String json = "{\"plainText\":\"" + answer + "\"}";
+        return new UnifiedQueryService.QueryResult(path, answer, presentation, json, "deepseek-v4-pro",
+                1, 2, 2, 2, 0, 0, List.of("query_tasks"), List.of("P1"), failures,
+                null, 20, 10, 0, 0, 0, 0, managementConclusionLimited, 100);
     }
 }

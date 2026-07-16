@@ -9,21 +9,7 @@ import java.util.Map;
 public final class DebugDtos {
     private DebugDtos() {}
 
-    public record DeepSeekPlanRequest(
-            @NotBlank String question,
-            String chatType
-    ) {}
-
-    public record DeepSeekSummarizeRequest(
-            @NotBlank String question,
-            List<Map<String, Object>> toolResults
-    ) {}
-
     public record DeepSeekConnectionRequest(
-            String prompt
-    ) {}
-
-    public record FastGptConnectionRequest(
             String prompt
     ) {}
 
@@ -35,11 +21,6 @@ public final class DebugDtos {
 
     public record McpToolsRequest(
             @NotNull Long tokenId
-    ) {}
-
-    public record McpQuestionRequest(
-            @NotNull Long tokenId,
-            @NotBlank String question
     ) {}
 
     public record FeishuMockEventRequest(

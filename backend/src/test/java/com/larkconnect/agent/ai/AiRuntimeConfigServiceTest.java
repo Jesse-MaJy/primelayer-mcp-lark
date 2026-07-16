@@ -1,71 +1,47 @@
 package com.larkconnect.agent.ai;
 
 import com.larkconnect.agent.admin.AdminDtos;
-import com.larkconnect.agent.crypto.TokenCryptoService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class AiRuntimeConfigServiceTest {
     private JdbcTemplate jdbcTemplate;
-    private TokenCryptoService cryptoService;
-    private AiRuntimeConfigService configService;
+    private AiRuntimeConfigService service;
 
     @BeforeEach
     void setUp() {
-        DriverManagerDataSource dataSource = new DriverManagerDataSource("jdbc:h2:mem:ai_runtime;MODE=MySQL;DB_CLOSE_DELAY=-1", "sa", "");
+        DriverManagerDataSource dataSource = new DriverManagerDataSource("jdbc:h2:mem:deepseek_runtime;MODE=MySQL;DB_CLOSE_DELAY=-1", "sa", "");
         jdbcTemplate = new JdbcTemplate(dataSource);
         jdbcTemplate.execute("drop table if exists system_config");
-        jdbcTemplate.execute("""
-                create table system_config (
-                  config_key varchar(128) primary key,
-                  config_value text not null,
-                  description varchar(512),
-                  is_sensitive tinyint not null default 0
-                )
-                """);
-        cryptoService = new TokenCryptoService(jdbcTemplate);
-        configService = new AiRuntimeConfigService(jdbcTemplate, cryptoService);
+        jdbcTemplate.execute("create table system_config (config_key varchar(128) primary key, config_value text not null, description varchar(512), is_sensitive tinyint not null default 0)");
+        service = new AiRuntimeConfigService(jdbcTemplate);
     }
 
     @Test
-    void defaultsToLocalAgentWhenNoSettingsExist() {
-        AiRuntimeConfigService.AiSettings settings = configService.loadSettings();
+    void defaultsToV4ProAndExposesOnlySupportedModels() {
+        AdminDtos.AiSettingsResponse settings = service.publicSettings();
 
-        assertThat(settings.engine()).isEqualTo(AiEngineType.LOCAL_AGENT);
-        assertThat(settings.fastGptModel()).isEqualTo("fastgpt");
-        assertThat(settings.fastGptTimeoutMs()).isEqualTo(30000);
-        assertThat(settings.fastGptMemoryEnabled()).isTrue();
-        assertThat(settings.fastGptApiKeyConfigured()).isFalse();
-        assertThat(settings.fastGptApiKey()).isNull();
+        assertThat(settings.deepSeekModel()).isEqualTo("deepseek-v4-pro");
+        assertThat(settings.supportedModels()).containsExactly("deepseek-v4-pro", "deepseek-v4-flash");
     }
 
     @Test
-    void savesFastGptApiKeyEncryptedAndNeverExposesItInPublicSettings() {
-        configService.saveSettings(new AdminDtos.AiSettingsRequest(
-                "FASTGPT",
-                "https://fastgpt.example.com",
-                "fastgpt",
-                "secret-key",
-                12000,
-                true
-        ));
+    void savesSelectedDeepSeekModel() {
+        AdminDtos.AiSettingsResponse settings = service.saveSettings(new AdminDtos.AiSettingsRequest("deepseek-v4-flash"));
 
-        AiRuntimeConfigService.AiSettings settings = configService.loadSettings();
-        String storedValue = jdbcTemplate.queryForObject(
-                "select config_value from system_config where config_key = ?",
-                String.class,
-                "ai.fastgpt.api_key"
-        );
+        assertThat(settings.deepSeekModel()).isEqualTo("deepseek-v4-flash");
+        assertThat(service.currentModel()).isEqualTo("deepseek-v4-flash");
+    }
 
-        assertThat(settings.engine()).isEqualTo(AiEngineType.FASTGPT);
-        assertThat(settings.fastGptApiKeyConfigured()).isTrue();
-        assertThat(settings.fastGptApiKey()).isEqualTo("secret-key");
-        assertThat(settings.toPublicResponse().fastGptApiKeyConfigured()).isTrue();
-        assertThat(storedValue).doesNotContain("secret-key");
-        assertThat(cryptoService.decrypt(storedValue)).isEqualTo("secret-key");
+    @Test
+    void rejectsUnsupportedModel() {
+        assertThatThrownBy(() -> service.saveSettings(new AdminDtos.AiSettingsRequest("deepseek-chat")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("不支持的 DeepSeek 模型");
     }
 }

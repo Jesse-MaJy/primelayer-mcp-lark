@@ -37,22 +37,21 @@ public class AdminRepository {
     }
 
     public List<Map<String, Object>> listUserBindings() {
-        return jdbcTemplate.queryForList("select id, person_name, feishu_open_id, primelayer_user_id, primelayer_user_name, status, created_at, updated_at from user_binding order by id desc");
+        return jdbcTemplate.queryForList("select id, person_name, feishu_open_id, status, created_at, updated_at from user_binding order by id desc");
     }
 
     public void upsertUserBinding(AdminDtos.UserBindingRequest request) {
         jdbcTemplate.update("""
-                insert into user_binding(person_name, feishu_open_id, primelayer_user_id, primelayer_user_name, status)
-                values (?, ?, ?, ?, ?)
+                insert into user_binding(person_name, feishu_open_id, status)
+                values (?, ?, ?)
                 on duplicate key update person_name = values(person_name),
-                  primelayer_user_id = values(primelayer_user_id),
-                  primelayer_user_name = values(primelayer_user_name), status = values(status)
-                """, request.personName(), request.feishuOpenId(), request.primelayerUserId(), request.primelayerUserName(), request.status());
+                  status = values(status)
+                """, request.personName(), request.feishuOpenId(), request.status());
     }
 
     public List<Map<String, Object>> listProjectTokens() {
         return jdbcTemplate.queryForList("""
-                select id, owner_type, owner_id, primelayer_user_id, project_id, project_name, project_remark,
+                select id, feishu_open_id, mcp_user_id, project_id, project_name, project_remark,
                   token_hash_suffix, token_status,
                   imported_by, imported_at, last_used_at, verify_status, last_verified_at, verify_error
                 from project_mcp_token order by id desc
@@ -65,7 +64,7 @@ public class AdminRepository {
         }
         try {
             return Optional.of(jdbcTemplate.queryForObject("""
-                    select id, owner_type, owner_id, primelayer_user_id, project_id, project_name, project_remark,
+                    select id, feishu_open_id, mcp_user_id, project_id, project_name, project_remark,
                       mcp_token_ciphertext, token_hash_suffix, token_status, verify_status, verify_error
                     from project_mcp_token
                     where id = ?
@@ -75,16 +74,16 @@ public class AdminRepository {
         }
     }
 
-    public Optional<ProjectTokenRecord> findProjectToken(String ownerType, String ownerId, String projectId) {
+    public Optional<ProjectTokenRecord> findProjectToken(String feishuOpenId, String projectId) {
         try {
             return Optional.of(jdbcTemplate.queryForObject("""
-                    select id, owner_type, owner_id, primelayer_user_id, project_id, project_name, project_remark,
+                    select id, feishu_open_id, mcp_user_id, project_id, project_name, project_remark,
                       mcp_token_ciphertext, token_hash_suffix, token_status, verify_status, verify_error
                     from project_mcp_token
-                    where owner_type = ? and owner_id = ? and lower(trim(project_id)) = lower(trim(?))
+                    where feishu_open_id = ? and lower(trim(project_id)) = lower(trim(?))
                     order by id desc
                     limit 1
-                    """, this::mapProjectToken, ownerType, ownerId, projectId));
+                    """, this::mapProjectToken, feishuOpenId, projectId));
         } catch (EmptyResultDataAccessException e) {
             return Optional.empty();
         }
@@ -92,6 +91,7 @@ public class AdminRepository {
 
     public void upsertProjectToken(
             AdminDtos.ProjectTokenRequest request,
+            String mcpUserId,
             String ciphertext,
             String suffix,
             String importedBy,
@@ -99,37 +99,37 @@ public class AdminRepository {
             String verifyError
     ) {
         Optional<ProjectTokenRecord> existing = findProjectToken(request.id())
-                .or(() -> findProjectToken(request.ownerType(), request.ownerId(), request.projectId()));
+                .or(() -> findProjectToken(request.feishuOpenId(), request.projectId()));
         if (existing.isPresent()) {
             jdbcTemplate.update("""
                     update project_mcp_token
-                    set owner_type = ?, owner_id = ?, primelayer_user_id = ?, project_id = ?, project_name = ?,
+                    set feishu_open_id = ?, mcp_user_id = ?, project_id = ?, project_name = ?,
                       project_remark = ?, mcp_token_ciphertext = ?, token_hash_suffix = ?, token_status = ?,
                       imported_by = ?, imported_at = current_timestamp, verify_status = ?,
                       last_verified_at = current_timestamp, verify_error = ?
                     where id = ?
-                    """, request.ownerType(), request.ownerId(), request.primelayerUserId(), request.projectId(),
+                    """, request.feishuOpenId(), mcpUserId, request.projectId(),
                     request.projectName(), request.projectRemark(), ciphertext, suffix, request.tokenStatus(),
                     importedBy, verifyStatus, verifyError, existing.get().id());
             return;
         }
         jdbcTemplate.update("""
-                insert into project_mcp_token(owner_type, owner_id, primelayer_user_id, project_id, project_name, project_remark, mcp_token_ciphertext, token_hash_suffix, token_status, imported_by, verify_status, last_verified_at, verify_error)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp, ?)
-                """, request.ownerType(), request.ownerId(), request.primelayerUserId(), request.projectId(), request.projectName(), request.projectRemark(), ciphertext, suffix, request.tokenStatus(), importedBy, verifyStatus, verifyError);
+                insert into project_mcp_token(feishu_open_id, mcp_user_id, project_id, project_name, project_remark, mcp_token_ciphertext, token_hash_suffix, token_status, imported_by, verify_status, last_verified_at, verify_error)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, current_timestamp, ?)
+                """, request.feishuOpenId(), mcpUserId, request.projectId(), request.projectName(), request.projectRemark(), ciphertext, suffix, request.tokenStatus(), importedBy, verifyStatus, verifyError);
     }
 
     public void updateProjectTokenMetadata(AdminDtos.ProjectTokenRequest request) {
         ProjectTokenRecord existing = findProjectToken(request.id())
-                .or(() -> findProjectToken(request.ownerType(), request.ownerId(), request.projectId()))
+                .or(() -> findProjectToken(request.feishuOpenId(), request.projectId()))
                 .orElseThrow(() -> new IllegalArgumentException("未找到可编辑的 MCP Token 配置，请先替换 Token。"));
         jdbcTemplate.update("""
                 update project_mcp_token
-                set owner_type = ?, owner_id = ?, primelayer_user_id = ?, project_id = ?, project_name = ?,
+                set feishu_open_id = ?, project_id = ?, project_name = ?,
                   project_remark = ?, token_status = ?
                 where id = ?
-                """, request.ownerType(), request.ownerId(), request.primelayerUserId(), request.projectId(),
-                request.projectName(), request.projectRemark(), request.tokenStatus(), existing.id());
+                """, request.feishuOpenId(), request.projectId(), request.projectName(), request.projectRemark(),
+                request.tokenStatus(), existing.id());
     }
 
     public void updateProjectTokenVerification(Long tokenId, String verifyStatus, String verifyError) {
@@ -140,17 +140,6 @@ public class AdminRepository {
                 """, verifyStatus, verifyError, tokenId);
     }
 
-    public List<Map<String, Object>> listChatBindings() {
-        return jdbcTemplate.queryForList("select id, feishu_chat_id, project_id, project_name, status, created_by, created_at, updated_at from feishu_chat_project_binding order by id desc");
-    }
-
-    public void upsertChatBinding(AdminDtos.ChatProjectBindingRequest request, String createdBy) {
-        jdbcTemplate.update("""
-                insert into feishu_chat_project_binding(feishu_chat_id, project_id, project_name, status, created_by)
-                values (?, ?, ?, ?, ?)
-                on duplicate key update project_id = values(project_id), project_name = values(project_name), status = values(status)
-                """, request.feishuChatId(), request.projectId(), request.projectName(), request.status(), createdBy);
-    }
 
     public List<Map<String, Object>> listAuditLogs() {
         return jdbcTemplate.queryForList("select * from agent_audit_log order by id desc limit 200");
@@ -172,6 +161,7 @@ public class AdminRepository {
                   t.chat_type,
                   t.message_text,
                   t.status,
+                  t.phase,
                   t.error_message as task_error,
                   t.created_at,
                   t.started_at,
@@ -181,14 +171,31 @@ public class AdminRepository {
                   a.project_ids,
                   a.final_answer,
                   a.latency_ms,
+                  a.latency_ms as processing_latency_ms,
+                  case when t.started_at is null then null
+                       else timestampdiff(microsecond, t.created_at, t.started_at) / 1000 end as queue_latency_ms,
                   a.error_message as audit_error,
-                  coalesce(mc.model_call_count, 0) as model_call_count,
+                  coalesce(ev.model_call_count, mc.model_call_count, 0) as model_call_count,
                   coalesce(tc.tool_call_count, 0) as tool_call_count,
+                  coalesce(ev.business_mcp_call_count, tc.tool_call_count, 0) as business_mcp_call_count,
+                  coalesce(ev.tool_discovery_count, 0) as tool_discovery_count,
+                  coalesce(ev.returned_count, 0) as returned_count,
+                  coalesce(ev.input_tokens, 0) as input_tokens,
+                  coalesce(ev.output_tokens, 0) as output_tokens,
+                  coalesce(ev.input_tokens, 0) + coalesce(ev.output_tokens, 0) as total_tokens,
+                  case when a.trace_status = 'PARTIAL' then 'PARTIAL'
+                       when coalesce(ev.event_count, 0) > 0 then 'COMPLETE'
+                       when ct.request_id is not null then 'SUMMARY_ONLY'
+                       else 'MISSING' end as trace_completeness,
                   coalesce(tc.failed_tool_call_count, 0) as failed_tool_call_count,
-                  tn.tool_names
+                  tn.tool_names,
+                  coalesce(fb.helpful_count, 0) as helpful_count,
+                  coalesce(fb.problem_count, 0) as problem_count,
+                  coalesce(fb.feedback_count, 0) as feedback_count
                 from agent_task t
                 left join agent_audit_log a on a.request_id = t.request_id
                 left join user_binding ub on ub.feishu_open_id = t.feishu_open_id
+                left join agent_chain_trace ct on ct.request_id = t.request_id
                 left join (
                   select request_id, count(*) as model_call_count
                   from agent_model_call_log
@@ -203,10 +210,30 @@ public class AdminRepository {
                 ) tc on tc.request_id = t.request_id
                 left join (
                   select request_id,
+                         count(*) as event_count,
+                         sum(case when event_type = 'model_call' then 1 else 0 end) as model_call_count,
+                         sum(case when event_type = 'mcp_call' and purpose = 'tool_call' then 1 else 0 end) as business_mcp_call_count,
+                         sum(case when event_type = 'mcp_call' and purpose = 'tool_discovery' then 1 else 0 end) as tool_discovery_count,
+                         sum(case when event_type = 'mcp_call' and purpose = 'tool_call' then coalesce(returned_count, 0) else 0 end) as returned_count,
+                         sum(case when event_type = 'model_call' then coalesce(input_tokens, 0) else 0 end) as input_tokens,
+                         sum(case when event_type = 'model_call' then coalesce(output_tokens, 0) else 0 end) as output_tokens
+                  from agent_trace_event
+                  group by request_id
+                ) ev on ev.request_id = t.request_id
+                left join (
+                  select request_id,
                          group_concat(distinct tool_name order by tool_name separator ',') as tool_names
                   from agent_tool_call_log
                   group by request_id
                 ) tn on tn.request_id = t.request_id
+                left join (
+                  select request_id,
+                         sum(case when rating = 'HELPFUL' then 1 else 0 end) as helpful_count,
+                         sum(case when rating = 'PROBLEM' then 1 else 0 end) as problem_count,
+                         count(*) as feedback_count
+                  from agent_answer_feedback
+                  group by request_id
+                ) fb on fb.request_id = t.request_id
                 order by t.id desc
                 limit 300
                 """);
@@ -216,9 +243,8 @@ public class AdminRepository {
 
     public record ProjectTokenRecord(
             Long id,
-            String ownerType,
-            String ownerId,
-            String primelayerUserId,
+            String feishuOpenId,
+            String mcpUserId,
             String projectId,
             String projectName,
             String projectRemark,
@@ -232,9 +258,8 @@ public class AdminRepository {
     private ProjectTokenRecord mapProjectToken(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
         return new ProjectTokenRecord(
                 rs.getLong("id"),
-                rs.getString("owner_type"),
-                rs.getString("owner_id"),
-                rs.getString("primelayer_user_id"),
+                rs.getString("feishu_open_id"),
+                rs.getString("mcp_user_id"),
                 rs.getString("project_id"),
                 rs.getString("project_name"),
                 rs.getString("project_remark"),

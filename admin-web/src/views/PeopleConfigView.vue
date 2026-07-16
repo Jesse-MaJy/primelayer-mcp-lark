@@ -3,7 +3,7 @@
     <div class="page-header">
       <div>
         <h1 class="page-title">人员配置</h1>
-        <div class="page-subtitle">维护飞书人员与项目 MCP Token。Token 直接绑定到飞书 open_id 或群 chat_id，项目名作为备注使用，不回显历史明文。</div>
+        <div class="page-subtitle">Token 仅绑定飞书 open_id。单个可用 Token 自动作为默认；多个 Token 自动识别项目，未识别时按名称查询前 20 个项目。</div>
       </div>
       <div class="toolbar">
         <a-button @click="refresh">刷新</a-button>
@@ -22,16 +22,20 @@
         <div class="status-value">{{ mcpAuthHeaderName }}</div>
       </div>
       <div class="status-tile">
-        <div class="status-label">可用 Token</div>
-        <div class="status-value">{{ activeTokenCount }}</div>
+        <div class="status-label">已配置 Token</div>
+        <div class="status-value">{{ projectTokens.length }}</div>
+      </div>
+      <div class="status-tile">
+        <div class="status-label">ACTIVE / 可查询</div>
+        <div class="status-value">{{ activeTokenCount }} / {{ eligibleTokenCount }}</div>
       </div>
       <div class="status-tile">
         <div class="status-label">未配置人员</div>
         <div class="status-value warn">{{ unconfiguredPeopleCount }}</div>
       </div>
       <div class="status-tile">
-        <div class="status-label">验证异常</div>
-        <div class="status-value danger">{{ failedVerifyCount }}</div>
+        <div class="status-label">异常 / 待补验</div>
+        <div class="status-value danger">{{ unavailableVerifyCount }}</div>
       </div>
     </div>
 
@@ -172,6 +176,7 @@
               <a-descriptions-item label="工具数量">{{ verifyResult.toolCount ?? 0 }}</a-descriptions-item>
               <a-descriptions-item label="Token Hash 后缀">{{ verifyResult.tokenHashSuffix || '-' }}</a-descriptions-item>
               <a-descriptions-item label="项目候选">{{ projectCandidates.length }}</a-descriptions-item>
+              <a-descriptions-item label="账号上下文">{{ verifyResult.mcpUserId || '由 Token 管理' }}</a-descriptions-item>
             </a-descriptions>
             <a-alert
               v-for="warning in verifyWarnings"
@@ -275,13 +280,10 @@ const tokenStepItems = [
 const userForm = reactive({
   personName: '',
   feishuOpenId: '',
-  primelayerUserId: '',
-  primelayerUserName: '',
   status: 'ACTIVE'
 })
 
 const tokenForm = reactive({
-  ownerType: 'OPEN_ID',
   ownerId: '',
   projectId: '',
   projectName: '',
@@ -293,7 +295,7 @@ const tokenForm = reactive({
 const combinedColumns = [
   { title: '人名', dataIndex: 'personName', fixed: 'left', width: 140 },
   { title: '飞书 open_id', dataIndex: 'feishuOpenId', width: 260 },
-  { title: 'Token 绑定对象', dataIndex: 'ownerId', width: 260 },
+  { title: 'Token 绑定 open_id', dataIndex: 'ownerId', width: 260 },
   { title: '项目备注名', dataIndex: 'projectName', width: 180 },
   { title: '项目标识', dataIndex: 'projectId', width: 180 },
   { title: 'Token Hash 后缀', dataIndex: 'tokenHashSuffix', width: 150 },
@@ -313,8 +315,8 @@ const userColumns = [
 
 const tokenColumns = [
   { title: '人名', dataIndex: 'personName' },
-  { title: '绑定类型', dataIndex: 'owner_type' },
-  { title: '绑定对象 ID', dataIndex: 'owner_id' },
+  { title: '飞书 open_id', dataIndex: 'feishu_open_id' },
+  { title: 'MCP 用户 ID（可选）', dataIndex: 'mcp_user_id' },
   { title: '项目备注名', dataIndex: 'project_name' },
   { title: '项目标识', dataIndex: 'project_id' },
   { title: 'Token Hash 后缀', dataIndex: 'token_hash_suffix' },
@@ -330,7 +332,13 @@ const mcpEndpoint = computed(() => String(health.value?.mcpEndpoint || '-'))
 const mcpAuthHeaderName = computed(() => String(health.value?.mcpAuthHeaderName || '-'))
 
 const activeTokenCount = computed(() => projectTokens.value.filter((row) => text(row, 'token_status') === 'ACTIVE').length)
-const failedVerifyCount = computed(() => projectTokens.value.filter((row) => text(row, 'verify_status') === 'FAILED').length)
+const eligibleTokenCount = computed(() => projectTokens.value.filter((row) =>
+  text(row, 'token_status') === 'ACTIVE'
+  && ['VERIFIED', 'MANUAL'].includes(text(row, 'verify_status'))
+).length)
+const unavailableVerifyCount = computed(() => projectTokens.value.filter((row) =>
+  !['VERIFIED', 'MANUAL'].includes(text(row, 'verify_status'))
+).length)
 const unconfiguredPeopleCount = computed(() => {
   const configured = new Set(projectTokens.value.map(tokenOwnerId).filter(Boolean))
   return userBindings.value.filter((row) => !configured.has(text(row, 'feishu_open_id'))).length
@@ -425,19 +433,13 @@ async function refresh() {
 function openUserModal(row?: DataRow) {
   userForm.personName = text(row, 'person_name')
   userForm.feishuOpenId = text(row, 'feishu_open_id')
-  userForm.primelayerUserId = text(row, 'primelayer_user_id') || text(row, 'feishu_open_id')
-  userForm.primelayerUserName = text(row, 'primelayer_user_name')
   userForm.status = text(row, 'status') || 'ACTIVE'
   userModalOpen.value = true
 }
 
 async function saveUser() {
   try {
-    await adminApi.saveUserBinding({
-      ...userForm,
-      primelayerUserId: userForm.primelayerUserId || userForm.feishuOpenId,
-      primelayerUserName: userForm.primelayerUserName || userForm.personName
-    })
+    await adminApi.saveUserBinding({ ...userForm })
     userModalOpen.value = false
     message.success('人员备注已保存')
     await refresh()
@@ -450,8 +452,7 @@ function openTokenWizard(row?: DataRow) {
   const tokenId = text(row, 'id')
   editingTokenId.value = tokenId ? Number(tokenId) : null
   replaceTokenMode.value = !editingTokenId.value
-  tokenForm.ownerType = text(row, 'owner_type') || 'OPEN_ID'
-  tokenForm.ownerId = text(row, 'owner_id') || text(row, 'feishuOpenId') || text(row, 'feishu_open_id') || text(row, 'primelayer_user_id')
+  tokenForm.ownerId = text(row, 'feishu_open_id') || text(row, 'feishuOpenId')
   tokenForm.projectId = text(row, 'project_id') || text(row, 'projectId') || ''
   tokenForm.projectName = text(row, 'project_name') || text(row, 'projectName') || ''
   tokenForm.mcpToken = ''
@@ -499,8 +500,7 @@ async function verifyToken() {
   verifying.value = true
   try {
     const result = await adminApi.verifyProjectToken({
-      ownerType: tokenForm.ownerType,
-      ownerId: tokenForm.ownerId,
+      feishuOpenId: tokenForm.ownerId,
       mcpToken: tokenForm.mcpToken
     })
     verifyResult.value = result
@@ -563,9 +563,7 @@ async function saveToken() {
   try {
     await adminApi.saveProjectToken({
       id: editingTokenId.value,
-      ownerType: tokenForm.ownerType,
-      ownerId: tokenForm.ownerId,
-      primelayerUserId: tokenForm.ownerId,
+      feishuOpenId: tokenForm.ownerId,
       projectId: finalProjectId.value,
       projectName: finalProjectName.value,
       projectRemark: finalProjectName.value,
@@ -588,8 +586,7 @@ function combinedRow(user: DataRow, token: DataRow | null) {
   return {
     key: `${text(user, 'id')}-${token ? text(token, 'id') : 'no-token'}`,
     id: token ? text(token, 'id') : '',
-    owner_type: token ? text(token, 'owner_type') : 'OPEN_ID',
-    owner_id: token ? tokenOwnerId(token) : text(user, 'feishu_open_id'),
+    feishu_open_id: token ? tokenOwnerId(token) : text(user, 'feishu_open_id'),
     project_id: token ? text(token, 'project_id') : '',
     project_name: token ? text(token, 'project_name') : '',
     personName: displayName(user),
@@ -635,11 +632,11 @@ function displayName(row?: DataRow) {
   if (!row) {
     return '-'
   }
-  return text(row, 'person_name') || text(row, 'feishu_open_id') || text(row, 'primelayer_user_name') || text(row, 'primelayer_user_id') || '-'
+  return text(row, 'person_name') || text(row, 'feishu_open_id') || '-'
 }
 
 function tokenOwnerId(row: DataRow) {
-  return text(row, 'owner_id') || text(row, 'primelayer_user_id')
+  return text(row, 'feishu_open_id')
 }
 
 function text(row: DataRow | undefined | null, key: string) {
@@ -663,7 +660,7 @@ onMounted(refresh)
 
 .status-grid {
   display: grid;
-  grid-template-columns: minmax(320px, 2fr) repeat(4, minmax(120px, 1fr));
+  grid-template-columns: minmax(320px, 2fr) repeat(5, minmax(120px, 1fr));
   gap: 12px;
   margin-bottom: 18px;
 }

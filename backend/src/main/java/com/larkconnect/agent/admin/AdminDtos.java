@@ -11,16 +11,12 @@ public final class AdminDtos {
     public record UserBindingRequest(
             String personName,
             @NotBlank String feishuOpenId,
-            String primelayerUserId,
-            String primelayerUserName,
             String status
     ) {}
 
     public record ProjectTokenRequest(
             Long id,
-            String ownerType,
-            String ownerId,
-            String primelayerUserId,
+            @NotBlank String feishuOpenId,
             String projectId,
             String projectName,
             String projectRemark,
@@ -31,34 +27,15 @@ public final class AdminDtos {
     ) {}
 
     public record ProjectTokenVerifyRequest(
-            String ownerType,
-            String ownerId,
-            String primelayerUserId,
+            @NotBlank String feishuOpenId,
             String mcpToken
     ) {}
 
-    public record ChatProjectBindingRequest(
-            @NotBlank String feishuChatId,
-            @NotBlank String projectId,
-            @NotBlank String projectName,
-            String status
-    ) {}
+    public record AiSettingsRequest(String deepSeekModel) {}
 
-    public record AiSettingsRequest(
-            String engine,
-            String fastGptBaseUrl,
-            String fastGptModel,
-            String fastGptApiKey,
-            Integer fastGptTimeoutMs,
-            Boolean fastGptMemoryEnabled
-    ) {}
+    public record AiSettingsResponse(String deepSeekModel, java.util.List<String> supportedModels) {}
 
-    public record AiSettingsResponse(
-            String engine,
-            String fastGptBaseUrl,
-            String fastGptModel,
-            boolean fastGptApiKeyConfigured,
-            int fastGptTimeoutMs,
-            boolean fastGptMemoryEnabled
-    ) {}
+    public record PromptVersionRequest(String content) {}
+    public record PromptActionRequest(String note) {}
+    public record PromptReplayRequest(Long snapshotId) {}
 }

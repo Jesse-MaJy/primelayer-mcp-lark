@@ -42,33 +42,12 @@
           </a-descriptions>
           <ResultViewer :data="deepseek.connectionResult" />
         </div>
-        <div class="split-grid">
-          <a-form layout="vertical">
-            <a-form-item label="问题">
-              <a-textarea v-model:value="deepseek.question" :rows="4" />
-            </a-form-item>
-            <a-form-item label="会话类型">
-              <a-radio-group v-model:value="deepseek.chatType">
-                <a-radio-button value="p2p">私聊</a-radio-button>
-                <a-radio-button value="group">群聊</a-radio-button>
-              </a-radio-group>
-            </a-form-item>
-            <div class="toolbar">
-              <a-button type="primary" :loading="loading.plan" @click="runDeepSeekPlan">生成计划</a-button>
-              <a-button :loading="loading.summarize" @click="runDeepSeekSummarize">总结模拟数据</a-button>
-            </div>
-            <a-form-item label="模拟 MCP 数据 JSON">
-              <a-textarea v-model:value="deepseek.toolResultsJson" :rows="8" />
-            </a-form-item>
-          </a-form>
-          <ResultViewer :data="deepseek.result" />
-        </div>
       </a-tab-pane>
 
       <a-tab-pane key="mcp" tab="MCP 测试">
         <div class="split-grid">
           <a-form layout="vertical">
-            <a-alert class="section-alert" type="info" show-icon message="MCP 测试现在使用自然语言问题。后端会先读取 Primelayer MCP 的真实工具列表，再用 DeepSeek 选择工具并生成参数。" />
+            <a-alert class="section-alert" type="info" show-icon message="这里仅保留底层 MCP 工具发现与连通性诊断；自然语言查询请使用 Agent 端到端测试。" />
             <a-form-item label="项目 Token">
               <a-select
                 v-model:value="mcp.tokenId"
@@ -78,12 +57,8 @@
                 placeholder="选择后台已保存的 token"
               />
             </a-form-item>
-            <a-form-item label="问题">
-              <a-textarea v-model:value="mcp.question" :rows="6" />
-            </a-form-item>
             <div class="toolbar">
-              <a-button type="primary" :loading="loading.mcp" @click="runMcpQuestion">用问题调用 MCP</a-button>
-              <a-button :loading="loading.mcpTools" @click="loadMcpTools">加载 MCP 工具</a-button>
+              <a-button type="primary" :loading="loading.mcpTools" @click="loadMcpTools">加载 MCP 工具</a-button>
             </div>
           </a-form>
           <div>
@@ -91,23 +66,11 @@
               <a-descriptions-item label="状态">
                 <a-tag :color="mcpOk ? 'green' : 'red'">{{ mcpOk ? '调用成功' : '调用失败' }}</a-tag>
               </a-descriptions-item>
-              <a-descriptions-item label="耗时">
-                {{ mcp.result.latencyMs ?? '-' }} ms
+              <a-descriptions-item label="工具数量">
+                {{ mcp.result.toolCount ?? '-' }}
               </a-descriptions-item>
-              <a-descriptions-item label="工具">
-                {{ mcp.result.toolName || '-' }}
-              </a-descriptions-item>
-              <a-descriptions-item label="规划器">
-                {{ mcp.result.planner || '-' }}
-              </a-descriptions-item>
-              <a-descriptions-item label="摘要" :span="2">
-                {{ mcp.result.summary || mcp.result.error || '-' }}
-              </a-descriptions-item>
-              <a-descriptions-item label="选择原因" :span="2">
-                {{ mcp.result.reason || '-' }}
-              </a-descriptions-item>
-              <a-descriptions-item label="返回文本" :span="2">
-                <pre class="inline-result">{{ mcp.result.resultText || '-' }}</pre>
+              <a-descriptions-item label="结果" :span="2">
+                {{ mcp.result.error || '已读取实时工具列表' }}
               </a-descriptions-item>
             </a-descriptions>
             <ResultViewer :data="mcp.result" />
@@ -138,14 +101,14 @@
           </a-form>
           <div>
             <a-descriptions v-if="agentSummaryVisible" class="result-block mcp-summary" bordered :column="2" size="small">
-              <a-descriptions-item label="规划器">
-                {{ agentPlanner }}
+              <a-descriptions-item label="路径">
+                {{ agentPath }}
               </a-descriptions-item>
-              <a-descriptions-item label="Skill">
-                {{ agentSkill }}
+              <a-descriptions-item label="模型">
+                {{ agentModel }}
               </a-descriptions-item>
-              <a-descriptions-item label="项目范围">
-                {{ agentProjectScope }}
+              <a-descriptions-item label="MCP 轮次">
+                {{ agentToolRounds }}
               </a-descriptions-item>
               <a-descriptions-item label="工具调用数">
                 {{ agentToolCallCount }}
@@ -199,6 +162,8 @@
                   v-model:value="feishuCard.presetKey"
                   class="preset-select"
                   :options="cardPresetOptions"
+                  :loading="loading.feishuCardPresets"
+                  :disabled="loading.feishuCardPresets || cardPresets.length === 0"
                   @change="applyCardPreset"
                 />
               </div>
@@ -209,6 +174,7 @@
                   type="button"
                   class="preset-card"
                   :class="{ active: feishuCard.presetKey === preset.key }"
+                  :disabled="loading.feishuCardPresets"
                   @click="selectCardPreset(preset.key)"
                 >
                   <span class="preset-card-tag" :style="{ background: preset.color }"></span>
@@ -217,6 +183,13 @@
                 </button>
               </div>
             </div>
+            <a-alert
+              v-if="!loading.feishuCardPresets && cardPresets.length === 0"
+              class="section-alert"
+              type="error"
+              show-icon
+              message="未加载到卡片模板，请检查后端调试接口。"
+            />
             <a-form-item label="选择人员（支持多选）">
               <a-select
                 v-model:value="feishuCard.selectedOpenIds"
@@ -238,9 +211,9 @@
               <a-textarea v-model:value="feishuCard.cardJson" :rows="18" />
             </a-form-item>
             <div class="toolbar">
-              <a-button type="primary" :loading="loading.feishuCard" @click="sendFeishuCard">发送卡片</a-button>
-              <a-button @click="formatFeishuCardJson">格式化 JSON</a-button>
-              <a-button @click="resetFeishuCard">恢复当前模板</a-button>
+              <a-button type="primary" :loading="loading.feishuCard" :disabled="!feishuCard.cardJson" @click="sendFeishuCard">发送卡片</a-button>
+              <a-button :disabled="!feishuCard.cardJson" @click="formatFeishuCardJson">格式化 JSON</a-button>
+              <a-button :disabled="!selectedPreset" @click="resetFeishuCard">恢复当前模板</a-button>
             </div>
           </a-form>
           <div>
@@ -272,9 +245,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
-import { adminApi } from '../api/admin'
+import { adminApi, type FeishuCardPreset } from '../api/admin'
 import ResultViewer from '../components/ResultViewer.vue'
-import { formatChinaDate, formatChinaDateTime } from '../utils/time'
 
 const activeTab = ref('health')
 const health = ref<Record<string, unknown> | null>(null)
@@ -284,14 +256,12 @@ const personOptions = ref<{ label: string; value: string }[]>([])
 const loading = reactive({
   health: false,
   deepseekConnection: false,
-  plan: false,
-  summarize: false,
-  mcp: false,
   mcpTools: false,
   agent: false,
   feishuToken: false,
   feishu: false,
-  feishuCard: false
+  feishuCard: false,
+  feishuCardPresets: false
 })
 
 const receiveIdTypeOptions = [
@@ -304,18 +274,11 @@ const receiveIdTypeOptions = [
 
 const deepseek = reactive({
   connectionPrompt: '请只回复 OK，用于测试 DeepSeek API 连通性。',
-  connectionResult: null as Record<string, unknown> | null,
-  question: '帮我看一下 Roche 项目的风险',
-  chatType: 'p2p',
-  toolResultsJson: JSON.stringify([
-    { projectId: 'roche', status: 'SUCCEEDED', result: { risks: ['示例风险'] } }
-  ], null, 2),
-  result: null as unknown
+  connectionResult: null as Record<string, unknown> | null
 })
 
 const mcp = reactive({
   tokenId: undefined as number | undefined,
-  question: '获取当前项目名称、工作空间名称、用户个人信息和租户名称',
   result: null as Record<string, unknown> | null
 })
 
@@ -344,73 +307,21 @@ const feishu = reactive({
   result: null as unknown
 })
 
-type CardPreset = {
-  key: string
-  label: string
-  description: string
-  color: string
-  create: () => Record<string, unknown>
-}
+const cardPresets = ref<FeishuCardPreset[]>([])
 
-const cardPresets: CardPreset[] = [
-  {
-    key: 'primelayer-answer',
-    label: 'AI 回答卡片',
-    description: '飞书正式回答样式，预留图标、指标和 ECharts 图表数据位',
-    color: '#1455d9',
-    create: createPrimelayerAnswerCard
-  },
-  {
-    key: 'basic-test',
-    label: '基础测试卡片',
-    description: '验证标题、字段、分割线和按钮渲染',
-    color: '#1677ff',
-    create: createBasicTestCard
-  },
-  {
-    key: 'daily-todo',
-    label: '每日待办',
-    description: '适合每天上午推送个人/项目待办清单',
-    color: '#22a06b',
-    create: createDailyTodoCard
-  },
-  {
-    key: 'construction-daily',
-    label: '施工日报',
-    description: '适合项目群每日同步进度、安全、质量和明日计划',
-    color: '#d97008',
-    create: createConstructionDailyCard
-  },
-  {
-    key: 'risk-alert',
-    label: '风险提醒',
-    description: '突出展示高优先级风险和建议动作',
-    color: '#d92d20',
-    create: createRiskAlertCard
-  },
-  {
-    key: 'weekly-summary',
-    label: '周报摘要',
-    description: '汇总本周进展、阻塞项和下周重点',
-    color: '#6941c6',
-    create: createWeeklySummaryCard
-  }
-]
-
-const cardPresetOptions = cardPresets.map((preset) => ({
+const cardPresetOptions = computed(() => cardPresets.value.map((preset) => ({
   label: preset.label,
   value: preset.key
-}))
+})))
 
 const defaultPresetKey = 'primelayer-answer'
-const defaultCardJson = stringifyCard(getCardPreset(defaultPresetKey).create())
 
 const feishuCard = reactive({
   receiveIdType: 'open_id',
   receiveId: '',
   selectedOpenIds: [] as string[],
   presetKey: defaultPresetKey,
-  cardJson: defaultCardJson,
+  cardJson: '',
   result: null as Record<string, unknown> | null
 })
 
@@ -423,11 +334,7 @@ const healthItems = computed(() => {
     { label: 'RabbitMQ', ok: rabbit?.ok === true, value: rabbit?.ok === true ? '正常' : '异常' },
     { label: 'DeepSeek Key', ok: value.deepSeekApiKeyConfigured === true, value: value.deepSeekApiKeyConfigured ? '已配置' : '未配置' },
     { label: 'MCP Endpoint', ok: value.mcpEndpointConfigured === true, value: value.mcpEndpointConfigured ? '已配置' : '未配置' },
-    { label: 'MCP Header', ok: Boolean(value.mcpAuthHeaderName), value: String(value.mcpAuthHeaderName || '-') },
-    { label: 'AI 引擎', ok: Boolean(value.aiEngine), value: String(value.aiEngine || '-') },
-    { label: 'Agent Service', ok: value.agentServiceEnabled === true, value: value.agentServiceEnabled ? '已启用' : '未启用' },
-    { label: 'FastGPT Key', ok: value.fastGptApiKeyConfigured === true, value: value.fastGptApiKeyConfigured ? '已配置' : '未配置' },
-    { label: 'FastGPT 记忆', ok: value.fastGptMemoryEnabled === true, value: value.fastGptMemoryEnabled ? '已开启' : '已关闭' },
+    { label: 'DeepSeek 模型', ok: Boolean(value.deepSeekModel), value: String(value.deepSeekModel || '-') },
     { label: '飞书 App ID', ok: value.feishuAppIdConfigured === true, value: value.feishuAppIdConfigured ? '已配置' : '未配置' },
     { label: '飞书 Secret', ok: value.feishuAppSecretConfigured === true, value: value.feishuAppSecretConfigured ? '已配置' : '未配置' },
     { label: '飞书 Verification Token', ok: value.feishuVerificationTokenConfigured === true, value: value.feishuVerificationTokenConfigured ? '已配置' : '未配置' },
@@ -441,22 +348,15 @@ const feishuTokenOk = computed(() => feishu.tokenResult?.ok === true)
 const feishuCardOk = computed(() => feishuCard.result?.ok === true)
 const selectedPreset = computed(() => getCardPreset(feishuCard.presetKey))
 const agentResult = computed(() => (agent.result || {}) as Record<string, unknown>)
-const agentPlan = computed(() => {
-  const result = agentResult.value
-  return (result.agentPlan || result.plan || {}) as Record<string, unknown>
-})
 const agentSummaryVisible = computed(() => Boolean(agent.result))
-const agentPlanner = computed(() => String(agentResult.value.planner || (agentResult.value.agentServiceFallback ? 'legacy-fallback' : 'legacy-deepseek')))
-const agentSkill = computed(() => String(agentPlan.value.skillId || agentPlan.value.intent || '-'))
-const agentProjectScope = computed(() => String(agentPlan.value.projectScope || '-'))
-const agentToolCallCount = computed(() => {
-  const calls = agentPlan.value.toolCalls
-  return Array.isArray(calls) ? calls.length : 0
-})
+const agentPath = computed(() => String(agentResult.value.path || '-'))
+const agentModel = computed(() => String(agentResult.value.model || '-'))
+const agentToolRounds = computed(() => Number(agentResult.value.toolRounds || 0))
+const agentToolCallCount = computed(() => Number(agentResult.value.logicalToolCalls || 0))
 const agentFinalAnswer = computed(() => String(agentResult.value.finalAnswer || '-'))
 
 async function refreshAll() {
-  await Promise.all([loadHealth(), loadTokens(), loadPeople()])
+  await Promise.all([loadHealth(), loadTokens(), loadPeople(), loadFeishuCardPresets()])
 }
 
 async function loadHealth() {
@@ -475,7 +375,7 @@ async function loadTokens() {
     const rows = await adminApi.listProjectTokens()
     tokenOptions.value = rows.map((row) => ({
       value: Number(row.id),
-      label: `${row.project_name || '-'} / ${row.project_id || '-'} / ${row.primelayer_user_id || '-'} / ${row.token_hash_suffix || '-'}`
+      label: `${row.project_name || '-'} / ${row.project_id || '-'} / ${row.feishu_open_id || '-'} / ${row.token_hash_suffix || '-'}`
     }))
     if (!mcp.tokenId && tokenOptions.value.length > 0) {
       mcp.tokenId = tokenOptions.value[0].value
@@ -491,7 +391,7 @@ async function loadPeople() {
     personOptions.value = rows
       .map((row) => ({
         value: String(row.feishu_open_id || ''),
-        label: `${row.person_name || row.primelayer_user_name || row.primelayer_user_id || '-'} / ${row.feishu_open_id || '-'}`
+        label: `${row.person_name || row.feishu_open_id || '-'} / ${row.feishu_open_id || '-'}`
       }))
       .filter((option) => option.value)
   } catch (error) {
@@ -499,17 +399,24 @@ async function loadPeople() {
   }
 }
 
-async function runDeepSeekPlan() {
-  loading.plan = true
+async function loadFeishuCardPresets() {
+  loading.feishuCardPresets = true
   try {
-    deepseek.result = await adminApi.debugDeepSeekPlan({
-      question: deepseek.question,
-      chatType: deepseek.chatType
-    })
+    const presets = await adminApi.debugFeishuCardPresets()
+    if (!Array.isArray(presets) || presets.length === 0) {
+      throw new Error('后端未返回可用的飞书卡片模板')
+    }
+    cardPresets.value = presets
+    if (!presets.some((preset) => preset.key === feishuCard.presetKey)) {
+      feishuCard.presetKey = presets[0].key
+    }
+    applyCardPreset()
   } catch (error) {
+    cardPresets.value = []
+    feishuCard.cardJson = ''
     showError(error)
   } finally {
-    loading.plan = false
+    loading.feishuCardPresets = false
   }
 }
 
@@ -523,20 +430,6 @@ async function runDeepSeekConnection() {
     showError(error)
   } finally {
     loading.deepseekConnection = false
-  }
-}
-
-async function runDeepSeekSummarize() {
-  loading.summarize = true
-  try {
-    deepseek.result = await adminApi.debugDeepSeekSummarize({
-      question: deepseek.question,
-      toolResults: parseJson(deepseek.toolResultsJson)
-    })
-  } catch (error) {
-    showError(error)
-  } finally {
-    loading.summarize = false
   }
 }
 
@@ -554,28 +447,6 @@ async function loadMcpTools() {
     showError(error)
   } finally {
     loading.mcpTools = false
-  }
-}
-
-async function runMcpQuestion() {
-  if (!mcp.tokenId) {
-    message.warning('请先选择项目 Token')
-    return
-  }
-  if (!mcp.question.trim()) {
-    message.warning('请输入问题')
-    return
-  }
-  loading.mcp = true
-  try {
-    mcp.result = await adminApi.debugMcpQuestion({
-      tokenId: mcp.tokenId,
-      question: mcp.question
-    })
-  } catch (error) {
-    showError(error)
-  } finally {
-    loading.mcp = false
   }
 }
 
@@ -626,7 +497,7 @@ function selectCardPreset(key: string) {
 }
 
 function applyCardPreset() {
-  feishuCard.cardJson = stringifyCard(selectedPreset.value.create())
+  feishuCard.cardJson = selectedPreset.value ? stringifyCard(selectedPreset.value.card) : ''
 }
 
 function formatFeishuCardJson() {
@@ -684,335 +555,11 @@ function resetFeishuCard() {
 }
 
 function getCardPreset(key: string) {
-  return cardPresets.find((preset) => preset.key === key) || cardPresets[0]
+  return cardPresets.value.find((preset) => preset.key === key) || cardPresets.value[0]
 }
 
 function stringifyCard(card: unknown) {
   return JSON.stringify(card, null, 2)
-}
-
-function currentDateLabel() {
-  return formatChinaDate()
-}
-
-function currentDateTimeLabel() {
-  return formatChinaDateTime(new Date())
-}
-
-function textBlock(content: string) {
-  return {
-    tag: 'div',
-    text: {
-      tag: 'lark_md',
-      content
-    }
-  }
-}
-
-function fieldBlock(fields: string[]) {
-  return {
-    tag: 'div',
-    fields: fields.map((content) => ({
-      is_short: true,
-      text: {
-        tag: 'lark_md',
-        content
-      }
-    }))
-  }
-}
-
-function noteBlock(content: string) {
-  return {
-    tag: 'note',
-    elements: [
-      {
-        tag: 'plain_text',
-        content
-      }
-    ]
-  }
-}
-
-function buttonAction(label: string, action: string, type = 'default', extraValue: Record<string, unknown> = {}) {
-  return {
-    tag: 'button',
-    text: {
-      tag: 'plain_text',
-      content: label
-    },
-    type,
-    value: {
-      action,
-      ...extraValue
-    }
-  }
-}
-
-function createPrimelayerAnswerCard() {
-  const chartOption = {
-    title: { text: '任务状态分布' },
-    tooltip: { trigger: 'item' },
-    legend: { bottom: 0 },
-    series: [
-      {
-        type: 'pie',
-        radius: ['45%', '70%'],
-        data: [
-          { name: '已完成', value: 18 },
-          { name: '进行中', value: 7 },
-          { name: '有风险', value: 3 }
-        ]
-      }
-    ]
-  }
-  return {
-    config: {
-      wide_screen_mode: true,
-      enable_forward: true
-    },
-    header: {
-      title: {
-        tag: 'plain_text',
-        content: 'Primelayer AI 回答'
-      },
-      template: 'blue'
-    },
-    elements: [
-      fieldBlock([
-        '**来源**\nPrimelayer AI',
-        '**意图**\n项目查询',
-        '**数据范围**\nRoche 项目',
-        `**生成时间**\n${currentDateTimeLabel()}`
-      ]),
-      {
-        tag: 'hr'
-      },
-      textBlock('**问题**\n今天 Roche 项目施工情况如何？'),
-      {
-        tag: 'hr'
-      },
-      textBlock('**回答**\n今天项目整体推进正常，主要完成了 2F 弱电桥架安装和 3F 隔墙龙骨复核。当前需要关注空调末端设备到场延迟，以及 5 个机电点位尚未确认的问题。'),
-      fieldBlock([
-        '**项目状态**\n正常推进',
-        '**完成事项**\n18 项',
-        '**风险事项**\n3 项',
-        '**建议优先级**\n先处理材料到场'
-      ]),
-      {
-        tag: 'hr'
-      },
-      textBlock('**图表数据预设**\n任务状态分布：已完成 18 项，进行中 7 项，有风险 3 项。后续可将 `chartSpec.option` 渲染为 ECharts 图片或替换为飞书原生图表组件。'),
-      {
-        tag: 'action',
-        actions: [
-          buttonAction('查看项目详情', 'open_project_detail', 'primary', {
-            iconKey: 'project',
-            projectId: 'demo-roche'
-          }),
-          buttonAction('查看图表', 'open_chart_detail', 'default', {
-            iconKey: 'chart',
-            chartSpec: {
-              component: 'echarts',
-              version: 1,
-              renderMode: 'image_or_native',
-              option: chartOption
-            }
-          })
-        ]
-      },
-      noteBlock('由 Primelayer AI 生成 · primelayer-ai-card/v1')
-    ]
-  }
-}
-
-function createBasicTestCard() {
-  return {
-    config: {
-      wide_screen_mode: true
-    },
-    header: {
-      title: {
-        tag: 'plain_text',
-        content: 'Primelayer Agent 测试卡片'
-      },
-      template: 'blue'
-    },
-    elements: [
-      textBlock('**测试说明**\n这是一条由 Lark Connect Agent Admin 发送的飞书交互卡片，用于验证应用能否向指定接收人发送 `interactive` 消息。'),
-      fieldBlock([
-        '**接收对象**\n以页面选择人员或手动输入的 receive_id 为准',
-        `**发送时间**\n${currentDateTimeLabel()}`
-      ]),
-      {
-        tag: 'action',
-        actions: [
-          buttonAction('按钮渲染测试', 'debug_card_button', 'primary')
-        ]
-      },
-      {
-        tag: 'hr'
-      },
-      textBlock('**预期结果**\n如果你能看到标题、字段和按钮，说明飞书卡片消息发送链路已跑通。'),
-      {
-        tag: 'hr'
-      },
-      noteBlock('按钮仅用于渲染测试，暂未接入点击回调')
-    ]
-  }
-}
-
-function createDailyTodoCard() {
-  return {
-    config: {
-      wide_screen_mode: true
-    },
-    header: {
-      title: {
-        tag: 'plain_text',
-        content: '今日待办提醒'
-      },
-      template: 'green'
-    },
-    elements: [
-      textBlock(`**${currentDateLabel()}｜Primelayer Agent 自动汇总**\n以下是今天建议优先处理的事项，请根据实际项目状态调整负责人和截止时间。`),
-      fieldBlock([
-        '**项目**\nRoche 项目',
-        '**待办总数**\n8 项',
-        '**高优先级**\n2 项',
-        '**生成时间**\n' + currentDateTimeLabel()
-      ]),
-      {
-        tag: 'hr'
-      },
-      textBlock('**优先事项**\n1. [高] 跟进 3F 机电洞口封堵确认，截止 12:00\n2. [中] 确认材料到场计划，避免影响明日吊顶施工\n3. [低] 更新本周验收清单，并同步项目群\n4. [低] 整理昨日遗留问题照片，补充责任人'),
-      textBlock('**建议节奏**\n上午处理高风险阻塞项，下午集中关闭资料与验收类任务。若现场条件变化，请及时在 Primelayer 更新状态。'),
-      {
-        tag: 'action',
-        actions: [
-          buttonAction('查看待办', 'open_daily_todos', 'primary'),
-          buttonAction('标记已读', 'ack_daily_todos'),
-          buttonAction('稍后提醒', 'snooze_daily_todos')
-        ]
-      },
-      noteBlock('测试模板：按钮仅验证卡片渲染，暂未接入飞书卡片回调')
-    ]
-  }
-}
-
-function createConstructionDailyCard() {
-  return {
-    config: {
-      wide_screen_mode: true
-    },
-    header: {
-      title: {
-        tag: 'plain_text',
-        content: '施工日报｜Roche 项目'
-      },
-      template: 'orange'
-    },
-    elements: [
-      textBlock(`**日报日期：${currentDateLabel()}**\n由 Primelayer Agent 汇总现场进度、安全质量、资源投入与明日计划。`),
-      fieldBlock([
-        '**今日进度**\n完成 86%',
-        '**现场人数**\n42 人',
-        '**安全状态**\n0 起事故',
-        '**质量问题**\n3 项待关闭'
-      ]),
-      {
-        tag: 'hr'
-      },
-      textBlock('**今日完成**\n- 2F 弱电桥架安装完成 120m\n- 3F 隔墙龙骨复核完成，偏差均在允许范围内\n- B1 材料堆场完成重新分区，通道已恢复'),
-      textBlock('**异常与风险**\n- [中] 空调末端设备到场延迟，预计影响 3F 天花封板\n- [低] 2F 东侧交叉作业密度较高，需加强旁站协调\n- [正常] 临电巡检正常，消防通道保持畅通'),
-      textBlock('**明日计划**\n1. 继续推进 3F 机电综合点位复核\n2. 完成 2F 东侧隐蔽验收资料归档\n3. 跟进空调末端设备物流与到场验收'),
-      {
-        tag: 'action',
-        actions: [
-          buttonAction('查看完整日报', 'open_construction_daily', 'primary'),
-          buttonAction('同步到项目群', 'share_construction_daily'),
-          buttonAction('补充现场照片', 'attach_site_photos')
-        ]
-      },
-      noteBlock('施工日报模板适合发送到项目群；批量发给个人时可用于确认日报样式')
-    ]
-  }
-}
-
-function createRiskAlertCard() {
-  return {
-    config: {
-      wide_screen_mode: true
-    },
-    header: {
-      title: {
-        tag: 'plain_text',
-        content: '项目风险提醒｜需要关注'
-      },
-      template: 'red'
-    },
-    elements: [
-      textBlock('**风险等级：高**\nPrimelayer Agent 检测到 2 个可能影响节点交付的风险，请项目负责人优先确认。'),
-      fieldBlock([
-        '**项目**\nRoche 项目',
-        '**风险来源**\n施工进度 / 材料计划',
-        '**影响节点**\n3F 天花封板',
-        '**建议处理时限**\n今日 18:00 前'
-      ]),
-      {
-        tag: 'hr'
-      },
-      textBlock('**风险详情**\n1. 空调末端设备未按计划到场，可能造成后续吊顶封板延期。\n2. 机电点位复核仍有 5 处未确认，可能影响隐蔽验收。'),
-      textBlock('**Agent 建议**\n- 指派材料负责人确认物流 ETA\n- 将未确认点位拆分到责任班组\n- 今日收工前同步一次风险关闭状态'),
-      {
-        tag: 'action',
-        actions: [
-          buttonAction('查看风险详情', 'open_risk_detail', 'primary'),
-          buttonAction('创建跟进项', 'create_follow_up'),
-          buttonAction('我已知晓', 'ack_risk_alert')
-        ]
-      },
-      noteBlock('风险模板用于验证高亮标题、字段摘要和多按钮操作布局')
-    ]
-  }
-}
-
-function createWeeklySummaryCard() {
-  return {
-    config: {
-      wide_screen_mode: true
-    },
-    header: {
-      title: {
-        tag: 'plain_text',
-        content: '项目周报摘要'
-      },
-      template: 'purple'
-    },
-    elements: [
-      textBlock('**本周项目状态：总体可控**\n本摘要由 Primelayer Agent 根据任务、风险和现场日报数据生成，用于周会前快速同步。'),
-      fieldBlock([
-        '**完成事项**\n24 项',
-        '**延期事项**\n3 项',
-        '**新增风险**\n2 项',
-        '**下周重点**\n机电验收 / 材料到场'
-      ]),
-      {
-        tag: 'hr'
-      },
-      textBlock('**本周亮点**\n- 2F 弱电桥架安装推进快于计划\n- 安全文明施工检查连续 5 天无重大问题\n- 隐蔽验收资料归档效率提升'),
-      textBlock('**阻塞项**\n- 3F 空调末端设备到场时间待确认\n- 部分变更签证资料仍需补齐附件'),
-      textBlock('**下周建议**\n1. 周一上午锁定材料到场计划\n2. 周三前完成 3F 机电综合点位确认\n3. 周五前关闭本周遗留质量问题'),
-      {
-        tag: 'action',
-        actions: [
-          buttonAction('查看完整周报', 'open_weekly_summary', 'primary'),
-          buttonAction('导出会议纪要', 'export_meeting_notes')
-        ]
-      },
-      noteBlock('周报模板适合后续扩展为 Primelayer AI 自动生成内容')
-    ]
-  }
 }
 
 function formatReceiveIds(value: unknown) {

@@ -14,6 +14,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 
 @RestController
 @RequestMapping("/api/feishu")
@@ -25,6 +27,7 @@ public class FeishuEventController {
     private final TokenResolver tokenResolver;
     private final AppProperties properties;
     private final ObjectMapper objectMapper;
+    private final FeedbackService feedbackService;
 
     public FeishuEventController(
             FeishuEventParser parser,
@@ -32,7 +35,8 @@ public class FeishuEventController {
             FeishuClient feishuClient,
             TokenResolver tokenResolver,
             AppProperties properties,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            FeedbackService feedbackService
     ) {
         this.parser = parser;
         this.taskService = taskService;
@@ -40,6 +44,7 @@ public class FeishuEventController {
         this.tokenResolver = tokenResolver;
         this.properties = properties;
         this.objectMapper = objectMapper;
+        this.feedbackService = feedbackService;
     }
 
     @PostMapping("/events")
@@ -60,6 +65,7 @@ public class FeishuEventController {
         }
         log.info("Parsed Feishu message: messageId={}, chatType={}, chatId={}, openId={}, text={}",
                 message.messageId(), message.chatType(), message.chatId(), message.openId(), message.text());
+        addGetReaction(message.messageId());
         if ("p2p".equals(message.chatType()) && isStartupKeyword(message.text())) {
             feishuClient.replyWelcomeCard(message.messageId());
             return ApiResponse.ok("welcome_sent");
@@ -68,22 +74,68 @@ public class FeishuEventController {
         return ApiResponse.ok("accepted");
     }
 
+    private void addGetReaction(String messageId) {
+        try {
+            feishuClient.addReaction(messageId, "Get");
+        } catch (RuntimeException e) {
+            log.warn("Failed to add Get reaction to Feishu message. messageId={}, error={}",
+                    messageId, e.getMessage());
+        }
+    }
+
     @PostMapping("/card-events")
     public Object receiveCardEvent(@RequestBody Map<String, Object> body) {
         log.info("Received Feishu card event keys: {}", body.keySet());
         if (body.containsKey("challenge")) {
+            String callbackToken = body.get("token") == null ? "" : String.valueOf(body.get("token"));
+            if (!hasText(properties.feishu().verificationToken())
+                    || !secureEquals(properties.feishu().verificationToken(), callbackToken)) {
+                return errorToast("飞书卡片回调校验失败");
+            }
             return Map.of("challenge", body.get("challenge"));
         }
         if (body.containsKey("encrypt")) {
             return ApiResponse.error("收到飞书加密卡片事件，但当前未启用解密。请先关闭 Encrypt Key 或补充解密能力。");
         }
         JsonNode root = objectMapper.valueToTree(body);
+        String verificationError = validateCardCallback(root);
+        if (hasText(verificationError)) {
+            log.warn("Rejected Feishu card callback: {}", verificationError);
+            return errorToast(verificationError);
+        }
         String action = firstText(root,
                 "/event/action/value/action",
                 "/event/action/action",
                 "/action/value/action",
                 "/action/action"
         );
+        if (action.startsWith("feedback_")) {
+            try {
+                return feedbackService.handle(new FeedbackService.FeedbackEvent(
+                        action,
+                        firstText(root, "/event/action/value/request_id", "/action/value/request_id"),
+                        firstText(root, "/event/action/value/reason_code", "/action/value/reason_code"),
+                        firstText(root, "/event/action/form_value/feedback_detail", "/action/form_value/feedback_detail"),
+                        firstText(root,
+                                "/event/operator/open_id",
+                                "/event/operator/operator_id/open_id",
+                                "/operator/open_id",
+                                "/operator/operator_id/open_id"),
+                        firstText(root,
+                                "/event/context/open_message_id",
+                                "/event/message/message_id",
+                                "/context/open_message_id"),
+                        firstText(root, "/header/event_id", "/event_id"),
+                        longValue(firstText(root, "/header/create_time", "/create_time"))
+                ));
+            } catch (IllegalArgumentException e) {
+                log.info("Feishu feedback rejected: {}", e.getMessage());
+                return errorToast(e.getMessage());
+            } catch (Exception e) {
+                log.error("Feishu feedback failed", e);
+                return errorToast("反馈提交失败，请稍后重试");
+            }
+        }
         if ("preset_question".equals(action)) {
             String openId = firstText(root,
                     "/event/operator/open_id",
@@ -148,6 +200,45 @@ public class FeishuEventController {
             feishuClient.sendMcpRequiredCard(receiveIdType, receiveId, result);
         }
         return ApiResponse.ok("accepted");
+    }
+
+    private String validateCardCallback(JsonNode root) {
+        String configuredToken = properties.feishu().verificationToken();
+        if (!hasText(configuredToken)) {
+            return "飞书 Verification Token 未配置";
+        }
+        String callbackToken = firstText(root, "/header/token", "/token");
+        if (!secureEquals(configuredToken, callbackToken)) {
+            return "飞书卡片回调校验失败";
+        }
+        String eventType = firstText(root, "/header/event_type", "/event_type");
+        if (!"card.action.trigger".equals(eventType)) {
+            return "不支持的飞书卡片事件类型";
+        }
+        return "";
+    }
+
+    private boolean secureEquals(String expected, String actual) {
+        if (actual == null) return false;
+        return MessageDigest.isEqual(
+                expected.getBytes(StandardCharsets.UTF_8),
+                actual.getBytes(StandardCharsets.UTF_8)
+        );
+    }
+
+    private long longValue(String value) {
+        try {
+            return Long.parseLong(value);
+        } catch (Exception ignored) {
+            return 0L;
+        }
+    }
+
+    private Map<String, Object> errorToast(String message) {
+        return Map.of("toast", Map.of(
+                "type", "error",
+                "content", hasText(message) ? message : "卡片操作失败"
+        ));
     }
 
     private boolean isStartupKeyword(String text) {
